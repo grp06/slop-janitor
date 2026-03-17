@@ -12,10 +12,10 @@ from typing import Any
 
 
 if TYPE_CHECKING:
-    from shell_skills.run_logging import RunLogger
-    from shell_skills.run_cycle import Stage
-    from shell_skills.run_cycle import TokenUsageSnapshot
-    from shell_skills.run_cycle import TokenUsageSummary
+    from codex_refactor_loop.cli import Stage
+    from codex_refactor_loop.cli import TokenUsageSnapshot
+    from codex_refactor_loop.cli import TokenUsageSummary
+    from codex_refactor_loop.run_log import RunLogger
 
 
 JSONValue = Any
@@ -452,7 +452,7 @@ class AppServerClient:
         last = self._parse_token_snapshot(payload.get("last"))
         if total is None or last is None:
             return None
-        from shell_skills.run_cycle import TokenUsageSummary
+        from codex_refactor_loop.cli import TokenUsageSummary
 
         return TokenUsageSummary(last=last, total=total)
 
@@ -460,7 +460,7 @@ class AppServerClient:
         if not isinstance(payload, dict):
             return None
         try:
-            from shell_skills.run_cycle import TokenUsageSnapshot
+            from codex_refactor_loop.cli import TokenUsageSnapshot
 
             return TokenUsageSnapshot(
                 total_tokens=int(payload["totalTokens"]),

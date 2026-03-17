@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 license = {file = "LICENSE"}
 
 [project.scripts]
-codex-refactor-loop = "shell_skills.run_cycle:main"
+codex-refactor-loop = "codex_refactor_loop.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["shell_skills*"]
+include = ["codex_refactor_loop*"]

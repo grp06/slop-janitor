@@ -13,7 +13,9 @@ The point is simple: if you use Codex directly, chaining a long sequence of mess
 
 `codex-refactor-loop` automates that chain.
 
-That matters because the value is not in any single turn. The value comes from compounding turns. A repo often gets materially better only after Codex has had a chance to propose a direction, sharpen it, implement it, and then critique its own work. `codex-refactor-loop` keeps that whole process on one thread so each step can build on the previous one instead of starting over.
+OpenAI's Codex cookbook describes `PLANS.md` as the way to structure multi-hour problem solving for coding agents. This repo packages that idea into a repeatable local loop: pick the refactor, pressure-test the plan, implement it, and then review the result several times on one thread. That matters because plan work is cheap and bug-fixing is expensive. It is better to spend extra turns improving the plan than to discover the same missing detail later as a broken implementation. Background: [Codex Exec Plans](https://developers.openai.com/cookbook/articles/codex_exec_plans).
+
+If you sign in with ChatGPT, Codex uses the access included with your ChatGPT plan for inference. OpenAI's current docs say that includes ChatGPT Plus, Pro, Business, and Enterprise/Edu, with limited-time access on Free and Go. You still clone the open-source Codex repo separately because `codex-refactor-loop` talks directly to Codex's app-server implementation instead of reimplementing that core agent loop itself.
 
 It also writes a complete run log, so the session is inspectable after the fact rather than something that only existed in the terminal.
 
@@ -25,27 +27,6 @@ By default, one cycle is:
 4. `review-recent-work` x5
 
 You can change the number of full cycles, improvement passes, and review passes.
-
-## Why Use It
-
-- It automates the long chain of Codex follow-up messages you would otherwise run by hand.
-- It gives you compounding improvement instead of a single pass.
-- It preserves continuity by reusing one thread across planning, implementation, and review.
-- In refactor mode, it is explicitly trying to make the repo better and more reliable, not just produce one plausible patch.
-- It stays noninteractive, so failures are explicit instead of hiding behind approval prompts.
-- It keeps the terminal readable by showing only agent commentary, final agent text, and token usage.
-- It writes a full timestamped log with stage banners, command output, file-change progress, MCP progress, and item lifecycle events.
-- It works from the root of any repo because it sends your current working directory to `thread/start`.
-
-This is useful when you want Codex to keep working the problem until the repo is in better shape, not just answer once.
-
-## Exec Plans
-
-An exec plan is a concrete implementation plan written for a coding agent, not just a human. It says what to change, in what order, how to verify it, and what success looks like. In this repo, the rules for writing a good exec plan live in `.agent/PLANS.md`.
-
-That file matters because it forces the plan to be specific before code gets written. The better the plan is, the cheaper the whole loop is. It is much cheaper to improve a plan four times up front than to implement a vague plan, ship bugs, and then spend more turns fixing avoidable mistakes later.
-
-If you want the OpenAI background on the idea, read the Codex cookbook article on exec plans: [Codex Exec Plans](https://developers.openai.com/cookbook/articles/codex_exec_plans).
 
 ## Bundled Skills
 
@@ -97,7 +78,7 @@ cd codex-refactor-loop
 
 The auth wrapper keeps stdin, stdout, and stderr attached to the terminal, so browser and device-code login behave like native `codex login`.
 
-If you sign in with your ChatGPT account, Codex uses the access included with your ChatGPT plan. OpenAI's current docs say Codex is included with ChatGPT Plus and Pro, so the normal ChatGPT-authenticated flow uses that plan-backed access for inference instead of requiring you to paste an API key manually. Official docs: [Using Codex with your ChatGPT plan](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan).
+ChatGPT-plan details: [Using Codex with your ChatGPT plan](https://help.openai.com/en/articles/11369540-using-codex-with-your-chatgpt-plan).
 
 ## Basic Use
 

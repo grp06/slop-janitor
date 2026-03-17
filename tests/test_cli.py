@@ -4,21 +4,25 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
-from shell_skills.app_server_client import AppServerClient
-from shell_skills.app_server_client import AppServerSpawnSpec
-from shell_skills.run_logging import RunLogger
-from shell_skills.run_cycle import build_stages
-from shell_skills.run_cycle import build_refactor_stages
-from shell_skills.run_cycle import main
-from shell_skills.run_cycle import resolve_codex_workspace
-from shell_skills.run_cycle import run
-from shell_skills.run_cycle import run_auth
+from codex_refactor_loop.app_server import AppServerClient
+from codex_refactor_loop.app_server import AppServerSpawnSpec
+from codex_refactor_loop.cli import build_refactor_stages
+from codex_refactor_loop.cli import build_stages
+from codex_refactor_loop.cli import main
+from codex_refactor_loop.cli import maybe_commit_checkpoint
+from codex_refactor_loop.cli import maybe_commit_for_stage
+from codex_refactor_loop.cli import prepare_auto_commit_state
+from codex_refactor_loop.cli import resolve_codex_workspace
+from codex_refactor_loop.cli import run
+from codex_refactor_loop.cli import run_auth
+from codex_refactor_loop.run_log import RunLogger
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -37,8 +41,16 @@ def chdir(path: Path):
         os.chdir(previous)
 
 
-class RunCycleTests(unittest.TestCase):
+class CliTests(unittest.TestCase):
     maxDiff = None
+
+    def init_git_repo(self, repo_root: Path) -> None:
+        subprocess.run(["git", "init"], cwd=repo_root, check=True, capture_output=True, text=True)
+        subprocess.run(["git", "config", "user.name", "Test User"], cwd=repo_root, check=True)
+        subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repo_root, check=True)
+        (repo_root / "README.md").write_text("initial\n", encoding="utf-8")
+        subprocess.run(["git", "add", "README.md"], cwd=repo_root, check=True)
+        subprocess.run(["git", "commit", "-m", "initial"], cwd=repo_root, check=True, capture_output=True, text=True)
 
     def make_app_server_spawn_spec(
         self,
@@ -300,6 +312,78 @@ class RunCycleTests(unittest.TestCase):
         self.assertIn("unsupported auth command: statuz", stderr.getvalue())
         self.assertNotIn("Codex workspace is not configured", stderr.getvalue())
 
+    def test_auto_commit_creates_checkpoint_commits_in_clean_repo(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        repo_root = Path(tempdir.name)
+        self.init_git_repo(repo_root)
+        run_logger = RunLogger(repo_root / "run.log", run_cwd=repo_root, mode="refactor", prompt=None)
+        try:
+            auto_commit = prepare_auto_commit_state(repo_root, run_logger)
+            self.assertTrue(auto_commit.enabled)
+
+            (repo_root / ".agent").mkdir()
+            (repo_root / ".agent" / "execplan-pending.md").write_text("plan\n", encoding="utf-8")
+            maybe_commit_for_stage(
+                auto_commit,
+                run_logger,
+                mock.Mock(label="find-best-refactor", skill_name="find-best-refactor"),
+                stage_index=1,
+            )
+
+            (repo_root / "app.py").write_text("print('implemented')\n", encoding="utf-8")
+            maybe_commit_for_stage(
+                auto_commit,
+                run_logger,
+                mock.Mock(label="implement-execplan", skill_name="implement-execplan"),
+                stage_index=6,
+            )
+
+            (repo_root / "notes.txt").write_text("final review changes\n", encoding="utf-8")
+            maybe_commit_checkpoint(auto_commit, run_logger, "codex-refactor-loop: final checkpoint")
+        finally:
+            run_logger.close()
+
+        history = subprocess.run(
+            ["git", "log", "--format=%s", "-4"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip().splitlines()
+        self.assertEqual(
+            history[:4],
+            [
+                "codex-refactor-loop: final checkpoint",
+                "codex-refactor-loop: after implement-execplan",
+                "codex-refactor-loop: initial plan created",
+                "initial",
+            ],
+        )
+
+    def test_auto_commit_is_disabled_for_dirty_repo(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        repo_root = Path(tempdir.name)
+        self.init_git_repo(repo_root)
+        (repo_root / "README.md").write_text("dirty\n", encoding="utf-8")
+        run_logger = RunLogger(repo_root / "run.log", run_cwd=repo_root, mode="pipeline", prompt=PROMPT)
+        try:
+            auto_commit = prepare_auto_commit_state(repo_root, run_logger)
+            self.assertFalse(auto_commit.enabled)
+            maybe_commit_checkpoint(auto_commit, run_logger, "codex-refactor-loop: final checkpoint")
+        finally:
+            run_logger.close()
+
+        history = subprocess.run(
+            ["git", "log", "--format=%s", "-1"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        self.assertEqual(history, "initial")
+
     def test_refactor_mode_runs_find_best_refactor_with_prompt(self) -> None:
         exit_code, stdout, stderr, record_path = self.run_pipeline(
             "refactor_with_prompt",
@@ -558,7 +642,7 @@ class RunCycleTests(unittest.TestCase):
         missing_path = Path(tempdir.name) / "missing-skill.md"
         stderr = io.StringIO()
         with mock.patch.dict(
-            "shell_skills.run_cycle.SKILL_PATHS",
+            "codex_refactor_loop.cli.SKILL_PATHS",
             {"execplan-create": missing_path},
             clear=False,
         ):

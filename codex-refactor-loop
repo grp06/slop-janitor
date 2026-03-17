@@ -2,7 +2,7 @@
 
 import sys
 
-from shell_skills.run_cycle import main
+from codex_refactor_loop.cli import main
 
 
 if __name__ == "__main__":

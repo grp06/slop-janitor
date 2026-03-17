@@ -9,12 +9,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from shell_skills.app_server_client import AppServerClient
-from shell_skills.app_server_client import AppServerError
-from shell_skills.app_server_client import AppServerSpawnSpec
-from shell_skills.run_logging import DEFAULT_RUNS_DIR
-from shell_skills.run_logging import RunLogger
-from shell_skills.run_logging import build_run_log_path
+from codex_refactor_loop.app_server import AppServerClient
+from codex_refactor_loop.app_server import AppServerError
+from codex_refactor_loop.app_server import AppServerSpawnSpec
+from codex_refactor_loop.run_log import DEFAULT_RUNS_DIR
+from codex_refactor_loop.run_log import RunLogger
+from codex_refactor_loop.run_log import build_run_log_path
 
 
 LOGGER = logging.getLogger(__name__)
@@ -63,6 +63,13 @@ class TokenUsageSnapshot:
 class TokenUsageSummary:
     last: TokenUsageSnapshot
     total: TokenUsageSnapshot
+
+
+@dataclass(frozen=True)
+class AutoCommitState:
+    enabled: bool
+    repo_root: Path
+    excluded_relative_paths: tuple[str, ...] = ()
 
 
 def stage_label(base_label: str, *, cycle_index: int, cycles: int) -> str:
@@ -330,6 +337,111 @@ def create_run_logger(*, runs_dir: Path, run_cwd: Path, mode: str, prompt: str |
         raise AppServerError(f"failed to create run log at {log_path}: {exc}") from exc
 
 
+def git_status_has_changes(repo_root: Path, excluded_relative_paths: tuple[str, ...] = ()) -> bool | None:
+    command = ["git", "status", "--short", "--", ".", *[f":(exclude){path}" for path in excluded_relative_paths]]
+    status = subprocess.run(
+        command,
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if status.returncode != 0:
+        return None
+    return bool(status.stdout.strip())
+
+
+def git_add_all(repo_root: Path, excluded_relative_paths: tuple[str, ...] = ()) -> subprocess.CompletedProcess[str]:
+    command = ["git", "add", "-A", "--", ".", *[f":(exclude){path}" for path in excluded_relative_paths]]
+    return subprocess.run(
+        command,
+        cwd=repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def prepare_auto_commit_state(run_cwd: Path, run_logger: RunLogger) -> AutoCommitState:
+    if shutil.which("git") is None:
+        run_logger.write_line("[commit] auto-commit disabled: `git` is not available")
+        return AutoCommitState(enabled=False, repo_root=run_cwd)
+    probe = subprocess.run(
+        ["git", "rev-parse", "--show-toplevel"],
+        cwd=run_cwd,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if probe.returncode != 0:
+        run_logger.write_line("[commit] auto-commit disabled: target directory is not inside a git repository")
+        return AutoCommitState(enabled=False, repo_root=run_cwd)
+    repo_root = Path(probe.stdout.strip())
+    repo_root_resolved = repo_root.resolve(strict=False)
+    excluded_relative_paths: tuple[str, ...] = ()
+    try:
+        log_relative_path = run_logger.log_path.resolve(strict=False).relative_to(repo_root_resolved)
+        excluded_relative_paths = (log_relative_path.as_posix(),)
+    except ValueError:
+        excluded_relative_paths = ()
+    has_changes = git_status_has_changes(repo_root, excluded_relative_paths)
+    if has_changes is None:
+        run_logger.write_line("[commit] auto-commit disabled: failed to inspect git status")
+        return AutoCommitState(enabled=False, repo_root=repo_root)
+    if has_changes:
+        run_logger.write_line("[commit] auto-commit disabled: repository had pre-existing changes at start")
+        return AutoCommitState(enabled=False, repo_root=repo_root)
+    run_logger.write_line(f"[commit] auto-commit enabled for {repo_root}")
+    return AutoCommitState(
+        enabled=True,
+        repo_root=repo_root,
+        excluded_relative_paths=excluded_relative_paths,
+    )
+
+
+def maybe_commit_checkpoint(auto_commit: AutoCommitState, run_logger: RunLogger, message: str) -> None:
+    if not auto_commit.enabled:
+        return
+    has_changes = git_status_has_changes(auto_commit.repo_root, auto_commit.excluded_relative_paths)
+    if has_changes is None:
+        run_logger.write_line("[commit] skipping checkpoint: failed to inspect git status")
+        return
+    if not has_changes:
+        run_logger.write_line(f"[commit] skipping `{message}`: no changes to commit")
+        return
+    add_result = git_add_all(auto_commit.repo_root, auto_commit.excluded_relative_paths)
+    if add_result.returncode != 0:
+        detail = (add_result.stderr or add_result.stdout).strip() or "git add failed"
+        run_logger.write_line(f"[commit] failed `{message}`: {detail}", to_terminal=True, stream="stderr")
+        return
+    commit_result = subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=auto_commit.repo_root,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if commit_result.returncode != 0:
+        detail = (commit_result.stderr or commit_result.stdout).strip() or "git commit failed"
+        run_logger.write_line(f"[commit] failed `{message}`: {detail}", to_terminal=True, stream="stderr")
+        return
+    run_logger.write_line(f"[commit] created `{message}`")
+
+
+def maybe_commit_for_stage(
+    auto_commit: AutoCommitState,
+    run_logger: RunLogger,
+    stage: Stage,
+    *,
+    stage_index: int,
+) -> None:
+    if stage_index == 1:
+        maybe_commit_checkpoint(auto_commit, run_logger, "codex-refactor-loop: initial plan created")
+        return
+    if stage.skill_name == "implement-execplan":
+        maybe_commit_checkpoint(auto_commit, run_logger, f"codex-refactor-loop: after {stage.label}")
+
+
 def run(
     argv: list[str] | None = None,
     *,
@@ -340,6 +452,7 @@ def run(
     args = parser.parse_args(argv)
     client: AppServerClient | None = None
     run_logger: RunLogger | None = None
+    auto_commit: AutoCommitState | None = None
     try:
         run_cwd = Path.cwd()
         run_logger = create_run_logger(
@@ -352,6 +465,7 @@ def run(
         run_logger.write_line(f"improvements={args.improvements}")
         run_logger.write_line(f"review={args.review}")
         run_logger.write_line("")
+        auto_commit = prepare_auto_commit_state(run_cwd, run_logger)
         stages = build_stages(
             args.mode,
             args.prompt,
@@ -402,6 +516,8 @@ def run(
                     stream="stderr",
                 )
                 return 1
+            maybe_commit_for_stage(auto_commit, run_logger, stage, stage_index=index)
+        maybe_commit_checkpoint(auto_commit, run_logger, "codex-refactor-loop: final checkpoint")
         return 0
     except AppServerError as exc:
         if run_logger is not None:
