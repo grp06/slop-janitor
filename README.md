@@ -1,6 +1,6 @@
 # `codex-refactor-loop`
 
-`codex-refactor-loop` automatically runs the long Codex follow-up loop that pushes a repo toward something cleaner, simpler, and more reliable than you usually get from a one-shot prompt.
+`codex-refactor-loop` automatically makes a repo cleaner, simpler, and more reliable.
 
 The point is simple: if you use Codex directly, chaining a long sequence of messages is manual work. A typical loop looks like this:
 
