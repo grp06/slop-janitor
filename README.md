@@ -1,5 +1,7 @@
 # `codex-refactor-loop`
 
+**Important: you must clone both this repo and the open-source Codex repo.** `codex-refactor-loop` talks directly to Codex's app-server implementation, so it will not work with only this repository checked out.
+
 `codex-refactor-loop` automatically makes a repo cleaner, simpler, and more reliable.
 
 Using Codex well usually means manually queuing a long chain of follow-up messages:
@@ -16,8 +18,6 @@ Using Codex well usually means manually queuing a long chain of follow-up messag
 It follows the `PLANS.md` pattern from OpenAI's Codex exec plans guide: plan, improve the plan, implement, and review. That is the basic trick for keeping an agent on the same problem for a long time instead of resetting every turn. Background: [Codex Exec Plans](https://developers.openai.com/cookbook/articles/codex_exec_plans).
 
 This tool uses the account you sign into Codex with for inference and token usage.
-
-**Important: you must clone both this repo and the open-source Codex repo.** `codex-refactor-loop` talks directly to Codex's app-server implementation, so it will not work with only this repository checked out.
 
 It also writes a complete run log, so the session is inspectable after the fact rather than something that only existed in the terminal.
 
