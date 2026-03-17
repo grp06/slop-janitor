@@ -9,12 +9,12 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from codex_refactor_loop.app_server import AppServerClient
-from codex_refactor_loop.app_server import AppServerError
-from codex_refactor_loop.app_server import AppServerSpawnSpec
-from codex_refactor_loop.run_log import DEFAULT_RUNS_DIR
-from codex_refactor_loop.run_log import RunLogger
-from codex_refactor_loop.run_log import build_run_log_path
+from slop_janitor.app_server import AppServerClient
+from slop_janitor.app_server import AppServerError
+from slop_janitor.app_server import AppServerSpawnSpec
+from slop_janitor.run_log import DEFAULT_RUNS_DIR
+from slop_janitor.run_log import RunLogger
+from slop_janitor.run_log import build_run_log_path
 
 
 LOGGER = logging.getLogger(__name__)
@@ -278,7 +278,7 @@ def extract_root_config_args(args: list[str]) -> tuple[list[str], list[str]]:
 
 def build_auth_command(base_argv: tuple[str, ...], argv: list[str]) -> list[str]:
     if not argv:
-        raise AppServerError("usage: codex-refactor-loop auth <login|status|logout> [args]")
+        raise AppServerError("usage: slop-janitor auth <login|status|logout> [args]")
     verb = argv[0]
     extras = argv[1:]
     root_args, remaining = extract_root_config_args(extras)
@@ -312,7 +312,7 @@ def run_auth(
 
 
 def build_run_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="codex-refactor-loop")
+    parser = argparse.ArgumentParser(prog="slop-janitor")
     parser.add_argument("--codex-workspace")
     parser.add_argument("--mode", choices=("pipeline", "refactor"), default="pipeline")
     parser.add_argument("--prompt")
@@ -323,7 +323,7 @@ def build_run_parser() -> argparse.ArgumentParser:
 
 
 def build_auth_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="codex-refactor-loop auth")
+    parser = argparse.ArgumentParser(prog="slop-janitor auth")
     parser.add_argument("--codex-workspace")
     parser.add_argument("auth_args", nargs=argparse.REMAINDER)
     return parser
@@ -436,10 +436,10 @@ def maybe_commit_for_stage(
     stage_index: int,
 ) -> None:
     if stage_index == 1:
-        maybe_commit_checkpoint(auto_commit, run_logger, "codex-refactor-loop: initial plan created")
+        maybe_commit_checkpoint(auto_commit, run_logger, "slop-janitor: initial plan created")
         return
     if stage.skill_name == "implement-execplan":
-        maybe_commit_checkpoint(auto_commit, run_logger, f"codex-refactor-loop: after {stage.label}")
+        maybe_commit_checkpoint(auto_commit, run_logger, f"slop-janitor: after {stage.label}")
 
 
 def run(
@@ -489,7 +489,7 @@ def run(
         account_info = client.get_account()
         if account_info.get("requiresOpenaiAuth") and account_info.get("account") is None:
             run_logger.write_line(
-                "OpenAI auth is required before starting the pipeline. Run `./codex-refactor-loop auth login`.",
+                "OpenAI auth is required before starting the pipeline. Run `./slop-janitor auth login`.",
                 to_terminal=True,
                 stream="stderr",
             )
@@ -517,7 +517,7 @@ def run(
                 )
                 return 1
             maybe_commit_for_stage(auto_commit, run_logger, stage, stage_index=index)
-        maybe_commit_checkpoint(auto_commit, run_logger, "codex-refactor-loop: final checkpoint")
+        maybe_commit_checkpoint(auto_commit, run_logger, "slop-janitor: final checkpoint")
         return 0
     except AppServerError as exc:
         if run_logger is not None:
@@ -538,7 +538,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             auth_args = build_auth_parser().parse_args(raw_argv[1:])
             if not auth_args.auth_args:
-                raise AppServerError("usage: codex-refactor-loop auth <login|status|logout> [args]")
+                raise AppServerError("usage: slop-janitor auth <login|status|logout> [args]")
             build_auth_command((), auth_args.auth_args)
             codex_workspace = resolve_codex_workspace(auth_args.codex_workspace)
             return run_auth(auth_args.auth_args, codex_workspace=codex_workspace)

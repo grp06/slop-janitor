@@ -3,7 +3,7 @@ requires = ["setuptools>=61"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "codex-refactor-loop"
+name = "slop-janitor"
 version = "0.1.0"
 description = "A small CLI that runs repeatable multi-turn Codex workflows."
 readme = "README.md"
@@ -11,7 +11,7 @@ requires-python = ">=3.11"
 license = {file = "LICENSE"}
 
 [project.scripts]
-codex-refactor-loop = "codex_refactor_loop.cli:main"
+slop-janitor = "slop_janitor.cli:main"
 
 [tool.setuptools.packages.find]
-include = ["codex_refactor_loop*"]
+include = ["slop_janitor*"]

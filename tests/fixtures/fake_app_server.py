@@ -180,7 +180,7 @@ class FakeServer:
         client_info = params.get("clientInfo", {})
         if capabilities.get("experimentalApi") is not True:
             raise ProtocolError(f"initialize missing experimentalApi opt-in: {params}")
-        if client_info.get("name") != "codex-refactor-loop" or client_info.get("title") != "codex-refactor-loop":
+        if client_info.get("name") != "slop-janitor" or client_info.get("title") != "slop-janitor":
             raise ProtocolError(f"unexpected clientInfo: {client_info}")
         self.send(
             {
@@ -302,7 +302,7 @@ class FakeServer:
             self.run_server_request_stage(
                 "account/chatgptAuthTokens/refresh",
                 {"reason": "unauthorized", "previousAccountId": None},
-                expect_error="external auth refresh is unsupported in codex-refactor-loop",
+                expect_error="external auth refresh is unsupported in slop-janitor",
                 failure_message="external auth refresh is unsupported in this pipeline",
             )
             return

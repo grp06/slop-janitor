@@ -11,18 +11,18 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from codex_refactor_loop.app_server import AppServerClient
-from codex_refactor_loop.app_server import AppServerSpawnSpec
-from codex_refactor_loop.cli import build_refactor_stages
-from codex_refactor_loop.cli import build_stages
-from codex_refactor_loop.cli import main
-from codex_refactor_loop.cli import maybe_commit_checkpoint
-from codex_refactor_loop.cli import maybe_commit_for_stage
-from codex_refactor_loop.cli import prepare_auto_commit_state
-from codex_refactor_loop.cli import resolve_codex_workspace
-from codex_refactor_loop.cli import run
-from codex_refactor_loop.cli import run_auth
-from codex_refactor_loop.run_log import RunLogger
+from slop_janitor.app_server import AppServerClient
+from slop_janitor.app_server import AppServerSpawnSpec
+from slop_janitor.cli import build_refactor_stages
+from slop_janitor.cli import build_stages
+from slop_janitor.cli import main
+from slop_janitor.cli import maybe_commit_checkpoint
+from slop_janitor.cli import maybe_commit_for_stage
+from slop_janitor.cli import prepare_auto_commit_state
+from slop_janitor.cli import resolve_codex_workspace
+from slop_janitor.cli import run
+from slop_janitor.cli import run_auth
+from slop_janitor.run_log import RunLogger
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -225,7 +225,7 @@ class CliTests(unittest.TestCase):
         methods = [message["method"] for message in self.inbound_messages(record) if "method" in message]
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("codex-refactor-loop auth login", stderr)
+        self.assertIn("slop-janitor auth login", stderr)
         self.assertNotIn("thread/start", methods)
 
     def test_pipeline_mode_requires_prompt(self) -> None:
@@ -340,7 +340,7 @@ class CliTests(unittest.TestCase):
             )
 
             (repo_root / "notes.txt").write_text("final review changes\n", encoding="utf-8")
-            maybe_commit_checkpoint(auto_commit, run_logger, "codex-refactor-loop: final checkpoint")
+            maybe_commit_checkpoint(auto_commit, run_logger, "slop-janitor: final checkpoint")
         finally:
             run_logger.close()
 
@@ -354,9 +354,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             history[:4],
             [
-                "codex-refactor-loop: final checkpoint",
-                "codex-refactor-loop: after implement-execplan",
-                "codex-refactor-loop: initial plan created",
+                "slop-janitor: final checkpoint",
+                "slop-janitor: after implement-execplan",
+                "slop-janitor: initial plan created",
                 "initial",
             ],
         )
@@ -371,7 +371,7 @@ class CliTests(unittest.TestCase):
         try:
             auto_commit = prepare_auto_commit_state(repo_root, run_logger)
             self.assertFalse(auto_commit.enabled)
-            maybe_commit_checkpoint(auto_commit, run_logger, "codex-refactor-loop: final checkpoint")
+            maybe_commit_checkpoint(auto_commit, run_logger, "slop-janitor: final checkpoint")
         finally:
             run_logger.close()
 
@@ -642,7 +642,7 @@ class CliTests(unittest.TestCase):
         missing_path = Path(tempdir.name) / "missing-skill.md"
         stderr = io.StringIO()
         with mock.patch.dict(
-            "codex_refactor_loop.cli.SKILL_PATHS",
+            "slop_janitor.cli.SKILL_PATHS",
             {"execplan-create": missing_path},
             clear=False,
         ):

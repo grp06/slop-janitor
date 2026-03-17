@@ -2,7 +2,7 @@
 
 import sys
 
-from codex_refactor_loop.cli import main
+from slop_janitor.cli import main
 
 
 if __name__ == "__main__":

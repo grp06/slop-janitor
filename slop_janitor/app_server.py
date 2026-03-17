@@ -12,10 +12,10 @@ from typing import Any
 
 
 if TYPE_CHECKING:
-    from codex_refactor_loop.cli import Stage
-    from codex_refactor_loop.cli import TokenUsageSnapshot
-    from codex_refactor_loop.cli import TokenUsageSummary
-    from codex_refactor_loop.run_log import RunLogger
+    from slop_janitor.cli import Stage
+    from slop_janitor.cli import TokenUsageSnapshot
+    from slop_janitor.cli import TokenUsageSummary
+    from slop_janitor.run_log import RunLogger
 
 
 JSONValue = Any
@@ -85,8 +85,8 @@ class AppServerClient:
             "initialize",
             {
                 "clientInfo": {
-                    "name": "codex-refactor-loop",
-                    "title": "codex-refactor-loop",
+                    "name": "slop-janitor",
+                    "title": "slop-janitor",
                     "version": "0.1.0",
                 },
                 "capabilities": {"experimentalApi": True},
@@ -390,7 +390,7 @@ class AppServerClient:
             self._send_server_result(request_id, {"permissions": {}, "scope": "turn"})
             return "permission approval is unsupported in this pipeline"
         if method == "account/chatgptAuthTokens/refresh":
-            self._send_server_error(request_id, "external auth refresh is unsupported in codex-refactor-loop")
+            self._send_server_error(request_id, "external auth refresh is unsupported in slop-janitor")
             return "external auth refresh is unsupported in this pipeline"
         self._send_server_error(request_id, f"unsupported server request `{method}`")
         return f"received unsupported server request `{method}`"
@@ -452,7 +452,7 @@ class AppServerClient:
         last = self._parse_token_snapshot(payload.get("last"))
         if total is None or last is None:
             return None
-        from codex_refactor_loop.cli import TokenUsageSummary
+        from slop_janitor.cli import TokenUsageSummary
 
         return TokenUsageSummary(last=last, total=total)
 
@@ -460,7 +460,7 @@ class AppServerClient:
         if not isinstance(payload, dict):
             return None
         try:
-            from codex_refactor_loop.cli import TokenUsageSnapshot
+            from slop_janitor.cli import TokenUsageSnapshot
 
             return TokenUsageSnapshot(
                 total_tokens=int(payload["totalTokens"]),
