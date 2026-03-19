@@ -12,6 +12,9 @@ from pathlib import Path
 from slop_janitor.app_server import AppServerClient
 from slop_janitor.app_server import AppServerError
 from slop_janitor.app_server import AppServerSpawnSpec
+from slop_janitor.models import Stage
+from slop_janitor.models import TokenUsageSnapshot
+from slop_janitor.models import TokenUsageSummary
 from slop_janitor.run_log import DEFAULT_RUNS_DIR
 from slop_janitor.run_log import RunLogger
 from slop_janitor.run_log import build_run_log_path
@@ -40,29 +43,6 @@ SKILL_PATHS = {
     "implement-execplan": SKILLS_ROOT / "implement-execplan" / "SKILL.md",
     "review-recent-work": SKILLS_ROOT / "review-recent-work" / "SKILL.md",
 }
-
-
-@dataclass(frozen=True)
-class Stage:
-    label: str
-    skill_name: str
-    skill_path: str
-    text: str
-
-
-@dataclass(frozen=True)
-class TokenUsageSnapshot:
-    total_tokens: int
-    input_tokens: int
-    cached_input_tokens: int
-    output_tokens: int
-    reasoning_output_tokens: int
-
-
-@dataclass(frozen=True)
-class TokenUsageSummary:
-    last: TokenUsageSnapshot
-    total: TokenUsageSnapshot
 
 
 @dataclass(frozen=True)

@@ -10,11 +10,12 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 from typing import Any
 
+from slop_janitor.models import Stage
+from slop_janitor.models import TurnResult
+from slop_janitor.turn_session import TurnSession
+
 
 if TYPE_CHECKING:
-    from slop_janitor.cli import Stage
-    from slop_janitor.cli import TokenUsageSnapshot
-    from slop_janitor.cli import TokenUsageSummary
     from slop_janitor.run_log import RunLogger
 
 
@@ -27,16 +28,6 @@ LOGGER = logging.getLogger(__name__)
 class AppServerSpawnSpec:
     argv: tuple[str, ...]
     cwd: str
-
-
-@dataclass
-class TurnResult:
-    turn_id: str
-    status: str
-    assistant_text: str
-    token_usage: TokenUsageSummary | None
-    error_message: str | None
-
 
 class AppServerError(RuntimeError):
     pass
@@ -125,12 +116,7 @@ class AppServerClient:
         turn = result.get("turn")
         if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
             raise AppServerError("turn/start response did not include turn.id")
-        turn_id = turn["id"]
-        assistant_parts: dict[str, list[str]] = {}
-        assistant_completed: dict[str, str] = {}
-        assistant_order: list[str] = []
-        token_usage: TokenUsageSummary | None = None
-        failure_message: str | None = None
+        session = TurnSession(thread_id=thread_id, turn_id=turn["id"], run_logger=self.run_logger)
 
         while True:
             event = self._next_event()
@@ -143,109 +129,17 @@ class AppServerClient:
 
             message = event["message"]
             if kind == "notification":
-                method = message["method"]
-                params = message.get("params", {})
-                if method == "thread/tokenUsage/updated":
-                    if params.get("threadId") == thread_id and params.get("turnId") == turn_id:
-                        token_usage = self._parse_token_usage(params.get("tokenUsage"))
-                    continue
-                if method == "item/agentMessage/delta":
-                    if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
-                        continue
-                    item_id = params.get("itemId")
-                    delta = params.get("delta", "")
-                    if isinstance(item_id, str):
-                        if item_id not in assistant_parts:
-                            assistant_parts[item_id] = []
-                            assistant_order.append(item_id)
-                        assistant_parts[item_id].append(delta)
-                    if isinstance(delta, str):
-                        self.run_logger.write(delta, to_terminal=True)
-                    continue
-                if method == "item/commandExecution/outputDelta":
-                    if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
-                        continue
-                    delta = params.get("delta", "")
-                    if isinstance(delta, str):
-                        self.run_logger.write(delta)
-                    continue
-                if method == "item/fileChange/outputDelta":
-                    if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
-                        continue
-                    delta = params.get("delta", "")
-                    if delta:
-                        self.run_logger.write_line(f"[fileChange] {delta}")
-                    continue
-                if method == "item/mcpToolCall/progress":
-                    if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
-                        continue
-                    message_text = params.get("message")
-                    if message_text:
-                        self.run_logger.write_line(f"[mcp] {message_text}")
-                    continue
-                if method == "item/started":
-                    if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
-                        continue
-                    item = params.get("item", {})
-                    self._register_agent_item(item, assistant_parts, assistant_completed, assistant_order)
-                    self.run_logger.write_line(f"[started] {self._describe_item(item)}")
-                    continue
-                if method == "item/completed":
-                    if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
-                        continue
-                    item = params.get("item", {})
-                    self._register_agent_item(item, assistant_parts, assistant_completed, assistant_order)
-                    if item.get("type") == "agentMessage":
-                        item_id = item.get("id")
-                        if isinstance(item_id, str) and not assistant_parts.get(item_id):
-                            text = item.get("text", "")
-                            if isinstance(text, str) and text:
-                                self.run_logger.write(text, to_terminal=True)
-                    self.run_logger.write_line(f"[completed] {self._describe_item(item)}")
-                    continue
-                if method == "error":
-                    if params.get("threadId") != thread_id or params.get("turnId") != turn_id:
-                        continue
-                    turn_error = params.get("error", {})
-                    if params.get("willRetry"):
-                        self.run_logger.write_line(
-                            f"[warning] {self._format_turn_error(turn_error)}",
-                            stream="stderr",
-                        )
-                    else:
-                        failure_message = self._format_turn_error(turn_error)
-                    continue
-                if method == "turn/completed":
-                    if params.get("threadId") != thread_id:
-                        continue
-                    completed_turn = params.get("turn", {})
-                    if completed_turn.get("id") != turn_id:
-                        continue
-                    status = str(completed_turn.get("status", "")).lower()
-                    completed_error = self._format_turn_error(completed_turn.get("error"))
-                    if status != "completed":
-                        failure_message = completed_error or failure_message
-                    elif failure_message is not None:
-                        status = "failed"
-                    elif token_usage is None:
-                        failure_message = failure_message or "successful turn completed without token usage data"
-                        status = "failed"
-                    assistant_text = self._assemble_assistant_text(
-                        assistant_parts,
-                        assistant_completed,
-                        assistant_order,
-                    )
-                    return TurnResult(
-                        turn_id=turn_id,
-                        status=status,
-                        assistant_text=assistant_text,
-                        token_usage=token_usage,
-                        error_message=failure_message,
-                    )
+                turn_result = session.handle_notification(message)
+                if turn_result is not None:
+                    return turn_result
                 continue
 
             if kind == "server_request":
-                failure_message = failure_message or self._handle_server_request(message)
+                reply = session.handle_server_request(message)
+                if reply.error_message is None:
+                    self._send_server_result(reply.request_id, reply.result or {})
+                else:
+                    self._send_server_error(reply.request_id, reply.error_message)
                 continue
 
     def close(self) -> None:
@@ -365,124 +259,3 @@ class AppServerClient:
     def _send_server_error(self, request_id: Any, message: str) -> None:
         LOGGER.warning("rejecting server request %s: %s", request_id, message)
         self._send({"id": request_id, "error": {"code": -32000, "message": message, "data": None}})
-
-    def _handle_server_request(self, request: dict[str, Any]) -> str:
-        method = request["method"]
-        request_id = request["id"]
-        if method == "item/commandExecution/requestApproval":
-            LOGGER.warning("declining unexpected command approval request")
-            self._send_server_result(request_id, {"decision": "decline"})
-            return "received unexpected command approval request while approvalPolicy=never"
-        if method == "item/fileChange/requestApproval":
-            LOGGER.warning("declining unexpected file change approval request")
-            self._send_server_result(request_id, {"decision": "decline"})
-            return "received unexpected file change approval request while approvalPolicy=never"
-        if method == "item/tool/requestUserInput":
-            LOGGER.warning("declining interactive tool input request")
-            self._send_server_result(request_id, {"answers": {}})
-            return "interactive tool input is unsupported in this pipeline"
-        if method == "mcpServer/elicitation/request":
-            LOGGER.warning("declining MCP elicitation request")
-            self._send_server_result(request_id, {"action": "decline", "content": None, "_meta": None})
-            return "MCP elicitation is unsupported in this pipeline"
-        if method == "item/permissions/requestApproval":
-            LOGGER.warning("declining permissions approval request")
-            self._send_server_result(request_id, {"permissions": {}, "scope": "turn"})
-            return "permission approval is unsupported in this pipeline"
-        if method == "account/chatgptAuthTokens/refresh":
-            self._send_server_error(request_id, "external auth refresh is unsupported in slop-janitor")
-            return "external auth refresh is unsupported in this pipeline"
-        self._send_server_error(request_id, f"unsupported server request `{method}`")
-        return f"received unsupported server request `{method}`"
-
-    def _describe_item(self, item: dict[str, Any]) -> str:
-        item_type = item.get("type", "unknown")
-        if item_type == "commandExecution":
-            return f"commandExecution {item.get('command', '')}".strip()
-        if item_type == "fileChange":
-            changes = item.get("changes") or []
-            return f"fileChange {len(changes)} path(s)"
-        if item_type == "mcpToolCall":
-            server = item.get("server", "")
-            tool = item.get("tool", "")
-            return f"mcpToolCall {server}.{tool}".strip(".")
-        if item_type == "agentMessage":
-            phase = item.get("phase")
-            return f"agentMessage {phase}".strip()
-        return item_type
-
-    def _register_agent_item(
-        self,
-        item: dict[str, Any],
-        assistant_parts: dict[str, list[str]],
-        assistant_completed: dict[str, str],
-        assistant_order: list[str],
-    ) -> None:
-        if item.get("type") != "agentMessage":
-            return
-        item_id = item.get("id")
-        if not isinstance(item_id, str):
-            return
-        if item_id not in assistant_parts:
-            assistant_parts[item_id] = []
-        if item_id not in assistant_order:
-            assistant_order.append(item_id)
-        text = item.get("text")
-        if isinstance(text, str):
-            assistant_completed[item_id] = text
-
-    def _assemble_assistant_text(
-        self,
-        assistant_parts: dict[str, list[str]],
-        assistant_completed: dict[str, str],
-        assistant_order: list[str],
-    ) -> str:
-        pieces: list[str] = []
-        for item_id in assistant_order:
-            if assistant_parts.get(item_id):
-                pieces.append("".join(assistant_parts[item_id]))
-            else:
-                pieces.append(assistant_completed.get(item_id, ""))
-        return "".join(pieces)
-
-    def _parse_token_usage(self, payload: Any) -> TokenUsageSummary | None:
-        if not isinstance(payload, dict):
-            return None
-        total = self._parse_token_snapshot(payload.get("total"))
-        last = self._parse_token_snapshot(payload.get("last"))
-        if total is None or last is None:
-            return None
-        from slop_janitor.cli import TokenUsageSummary
-
-        return TokenUsageSummary(last=last, total=total)
-
-    def _parse_token_snapshot(self, payload: Any) -> TokenUsageSnapshot | None:
-        if not isinstance(payload, dict):
-            return None
-        try:
-            from slop_janitor.cli import TokenUsageSnapshot
-
-            return TokenUsageSnapshot(
-                total_tokens=int(payload["totalTokens"]),
-                input_tokens=int(payload["inputTokens"]),
-                cached_input_tokens=int(payload["cachedInputTokens"]),
-                output_tokens=int(payload["outputTokens"]),
-                reasoning_output_tokens=int(payload["reasoningOutputTokens"]),
-            )
-        except (KeyError, TypeError, ValueError):
-            return None
-
-    def _format_turn_error(self, payload: Any) -> str | None:
-        if not isinstance(payload, dict):
-            return None
-        message = payload.get("message")
-        if not isinstance(message, str):
-            return None
-        extras: list[str] = [message]
-        info = payload.get("codexErrorInfo")
-        if info:
-            extras.append(str(info))
-        details = payload.get("additionalDetails")
-        if details:
-            extras.append(str(details))
-        return " | ".join(extras)

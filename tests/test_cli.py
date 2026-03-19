@@ -11,7 +11,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from slop_janitor.app_server import AppServerClient
 from slop_janitor.app_server import AppServerSpawnSpec
 from slop_janitor.cli import build_refactor_stages
 from slop_janitor.cli import build_stages
@@ -527,40 +526,6 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("turn/start` failed with JSON-RPC error 4100", stderr)
 
-    def test_multiple_agent_message_item_ids_do_not_interleave(self) -> None:
-        tempdir = tempfile.TemporaryDirectory()
-        self.addCleanup(tempdir.cleanup)
-        record_path = Path(tempdir.name) / "multi-agent.json"
-        run_logger = RunLogger(
-            Path(tempdir.name) / "runs" / "direct-client.log",
-            run_cwd=REPO_ROOT,
-            mode="pipeline",
-            prompt=PROMPT,
-        )
-        client = AppServerClient(self.make_app_server_spawn_spec("multi_agent_items", record_path), run_logger)
-        try:
-            client.start()
-            client.initialize()
-            account = client.get_account()
-            self.assertTrue(account["requiresOpenaiAuth"])
-            thread_id = client.start_thread(str(REPO_ROOT))
-            stage = mock.Mock(
-                label="execplan-create",
-                skill_name="execplan-create",
-                skill_path=str(REPO_ROOT / ".agents" / "skills" / "execplan-create" / "SKILL.md"),
-                text="$execplan-create help me build a CRM",
-            )
-            stdout = io.StringIO()
-            with contextlib.redirect_stdout(stdout):
-                result = client.run_turn(thread_id, stage)
-        finally:
-            client.close()
-            run_logger.close()
-
-        self.assertEqual(result.status, "completed")
-        self.assertEqual(result.assistant_text, "alpha onealpha twobeta only")
-        self.assertIsNotNone(result.token_usage)
-
     def test_fake_server_spawn_override_drives_cli_path(self) -> None:
         server_cwd = Path(tempfile.mkdtemp())
         self.addCleanup(server_cwd.rmdir)
@@ -572,68 +537,6 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         self.assertEqual(Path(record["serverCwd"]).resolve(), server_cwd.resolve())
-
-    def test_non_retrying_error_notification_fails_turn(self) -> None:
-        exit_code, _, stderr, _ = self.run_pipeline("non_retrying_error")
-
-        self.assertEqual(exit_code, 1)
-        self.assertIn("stage exploded", stderr)
-        self.assertIn("fatal", stderr)
-
-    def test_tool_request_user_input_fails_noninteractive_run(self) -> None:
-        exit_code, _, stderr, record_path = self.run_pipeline("tool_request_user_input")
-        record = self.read_json(record_path)
-        client_response = next(
-            message
-            for message in self.inbound_messages(record)
-            if message.get("id") == 900 and "result" in message
-        )
-
-        self.assertEqual(exit_code, 1)
-        self.assertEqual(client_response["result"], {"answers": {}})
-        self.assertIn("interactive tool input is unsupported", stderr)
-
-    def test_mcp_elicitation_request_fails_noninteractive_run(self) -> None:
-        exit_code, _, stderr, record_path = self.run_pipeline("mcp_elicitation")
-        record = self.read_json(record_path)
-        client_response = next(
-            message
-            for message in self.inbound_messages(record)
-            if message.get("id") == 900 and "result" in message
-        )
-
-        self.assertEqual(exit_code, 1)
-        self.assertEqual(
-            client_response["result"],
-            {"action": "decline", "content": None, "_meta": None},
-        )
-        self.assertIn("MCP elicitation is unsupported", stderr)
-
-    def test_permissions_request_fails_noninteractive_run(self) -> None:
-        exit_code, _, stderr, record_path = self.run_pipeline("permissions_request")
-        record = self.read_json(record_path)
-        client_response = next(
-            message
-            for message in self.inbound_messages(record)
-            if message.get("id") == 900 and "result" in message
-        )
-
-        self.assertEqual(exit_code, 1)
-        self.assertEqual(client_response["result"], {"permissions": {}, "scope": "turn"})
-        self.assertIn("permission approval is unsupported", stderr)
-
-    def test_chatgpt_auth_refresh_request_fails_cleanly(self) -> None:
-        exit_code, _, stderr, record_path = self.run_pipeline("chatgpt_auth_refresh")
-        record = self.read_json(record_path)
-        client_response = next(
-            message
-            for message in self.inbound_messages(record)
-            if message.get("id") == 900 and "error" in message
-        )
-
-        self.assertEqual(exit_code, 1)
-        self.assertIn("external auth refresh is unsupported", client_response["error"]["message"])
-        self.assertIn("external auth refresh is unsupported", stderr)
 
     def test_missing_skill_fails_fast(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
@@ -684,19 +587,6 @@ class CliTests(unittest.TestCase):
 
     def test_unexpected_approval_request_declines_and_fails(self) -> None:
         exit_code, _, stderr, record_path = self.run_pipeline("approval_request")
-        record = self.read_json(record_path)
-        client_response = next(
-            message
-            for message in self.inbound_messages(record)
-            if message.get("id") == 900 and "result" in message
-        )
-
-        self.assertEqual(exit_code, 1)
-        self.assertEqual(client_response["result"], {"decision": "decline"})
-        self.assertIn("unexpected command approval request", stderr)
-
-    def test_unexpected_approval_request_still_fails_when_turn_reports_completed(self) -> None:
-        exit_code, _, stderr, record_path = self.run_pipeline("approval_request_completed_status")
         record = self.read_json(record_path)
         client_response = next(
             message

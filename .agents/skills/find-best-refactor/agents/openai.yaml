@@ -1,3 +1,3 @@
 interface:
   display_name: "Find Best Refactor"
-  short_description: "Find the single highest-leverage refactor in a repo"
+  short_description: "Find the refactor that most reduces system complexity"
