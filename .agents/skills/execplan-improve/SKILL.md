@@ -9,6 +9,24 @@ description: >-
 
 > **Core philosophy:** Every improvement must trace back to something found in the actual code. No speculative additions. No surface-level rewording.
 
+## Ousterhout lens
+
+Use John Ousterhout's design philosophy as the design-quality lens for the audit:
+
+- prefer deep modules over shallow wrappers
+- prefer interfaces that hide sequencing and policy details
+- prefer fewer concepts, fewer knobs, and fewer special cases
+- prefer simpler mental models over visually tidy decomposition
+- prefer moving complexity behind a stable boundary over redistributing it
+
+Treat these as the main forms of complexity:
+
+- change amplification
+- cognitive load
+- unknown unknowns
+
+An improved plan is not just more accurate. It should also be clearer about why the target design is simpler and what complexity the change removes from the rest of the system.
+
 ## Resolving the Base Repo
 
 You may be running from a Codex worktree (e.g. `~/.codex/worktrees/<id>/<repo>/`). Worktrees are shallow copies — the main repo often has files the worktree does not. Always resolve the base repo path:
@@ -65,10 +83,13 @@ Read files that import from or are imported by the referenced files. Look for:
 - Conventions (naming, file structure, test layout) the plan would violate
 - Related tests that would break or need updating
 - Edge cases the plan misses
+- Leaked sequencing or policy that the plan should hide behind a better boundary
+- Shallow abstractions or pass-through layers the plan currently preserves without justification
+- Duplicate concepts or special-case branches the plan could collapse or absorb
 
 ### Step 4: Audit the Plan
 
-Evaluate against six criteria:
+Evaluate against seven criteria:
 
 | Criteria | Question |
 |----------|----------|
@@ -78,6 +99,7 @@ Evaluate against six criteria:
 | **Feasibility** | Steps achievable in order? Hidden dependencies between milestones? |
 | **Testability** | Concrete verification per milestone? Test paths, names, assertions specified? |
 | **Safety** | Idempotent? Retriable? Destructive ops have rollback? |
+| **Design Quality** | Does the plan actually reduce complexity, deepen a boundary, hide sequencing/policy, and explain the complexity dividend? |
 
 ### Step 5: Rewrite the Plan
 
@@ -95,6 +117,10 @@ Apply only code-grounded improvements:
 - Specify test-first verification where feasible
 - Reference actual patterns and utilities discovered in Step 3
 - Ensure every PLANS.md-required section exists and is substantive
+- Make the plan explicit about the simpler boundary it is aiming to create
+- Call out when a proposed abstraction is shallow and either justify it or replace it with a simpler plan shape
+- Remove plan language that adds concepts or layers without reducing interface burden
+- Name the complexity dividend: what future readers or callers no longer need to know after the change
 
 Do not change the plan's intent. Do not add milestones that don't serve the original purpose. Make the same plan more accurate, complete, and executable.
 
@@ -134,3 +160,4 @@ If Step 0 short-circuits, return exactly `skip` and nothing else.
 - **Removing intent** — Improve execution detail; do not second-guess the goal.
 - **Speculative additions** — Every addition must trace back to something discovered in the code.
 - **Ignoring existing progress** — Preserve completed milestones. Do not uncheck work that was done.
+- **Blessing shallow design** — Do not preserve a needlessly thin abstraction or leaky interface just because it was already in the draft.

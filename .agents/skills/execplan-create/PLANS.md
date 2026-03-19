@@ -50,6 +50,28 @@ Validation is not optional. Include instructions to run tests, to start the syst
 
 Capture evidence. When your steps produce terminal output, short diffs, or logs, include them inside the single fenced block as indented examples. Keep them concise and focused on what proves success. If you need to include a patch, prefer file-scoped diffs or small excerpts that a reader can recreate by following your instructions rather than pasting large blobs.
 
+## Design quality lens
+
+Use John Ousterhout's design philosophy as the default lens for shaping the plan and resolving design ambiguity.
+
+Prefer simple mental models over elegant-looking structure. Prefer deep modules over shallow wrappers. Prefer interfaces that hide sequencing and policy details. Prefer fewer concepts, fewer knobs, and fewer special cases. Prefer moving complexity behind a stable boundary over redistributing it across more files.
+
+Treat these as the main forms of complexity:
+
+* Change amplification: one logical change requires edits in many places.
+* Cognitive load: a reader or caller must hold too many facts in mind.
+* Unknown unknowns: important behavior is surprising, implicit, or scattered.
+
+Every ExecPlan should explain the design quality of the proposed change, not just the mechanics. Make it clear:
+
+* what complexity exists today and who pays for it
+* what boundary, module, or interface becomes simpler after the change
+* what knowledge, sequencing, or policy moves out of callers and into the implementation
+* what concepts, branches, or special cases disappear
+* what the complexity dividend is for future readers and future changes
+
+Do not mistake motion for simplification. A plan is weaker if it mainly adds wrappers, adapters, flags, layers, or configuration without hiding more detail from the rest of the system. If a new abstraction is required, state exactly what it hides and why the system is simpler with it than without it.
+
 ## Milestones
 
 Milestones are narrative, not bureaucracy. If you break the work into milestones, introduce each with a brief paragraph that describes the scope, what will exist at the end of the milestone that did not exist before, the commands to run, and the acceptance you expect to observe. Keep it readable as a story: goal, work, result, proof. Progress and milestones are distinct: milestones tell the story, progress tracks granular work. Both must exist. Never abbreviate a milestone merely for the sake of brevity, do not leave out details that could be crucial to a future implementation.
@@ -80,7 +102,7 @@ Prefer additive code changes followed by subtractions that keep tests passing. P
 
     ## Purpose / Big Picture
 
-    Explain in a few sentences what someone gains after this change and how they can see it working. State the user-visible behavior you will enable.
+    Explain in a few sentences what someone gains after this change and how they can see it working. State the user-visible behavior you will enable. Also explain what current complexity or interface burden this change removes.
 
     ## Progress
 
@@ -113,11 +135,11 @@ Prefer additive code changes followed by subtractions that keep tests passing. P
 
     ## Context and Orientation
 
-    Describe the current state relevant to this task as if the reader knows nothing. Name the key files and modules by full path. Define any non-obvious term you will use. Do not refer to prior plans.
+    Describe the current state relevant to this task as if the reader knows nothing. Name the key files and modules by full path. Define any non-obvious term you will use. Do not refer to prior plans. Make clear what callers or maintainers currently need to know that they should not need to know after the change.
 
     ## Plan of Work
 
-    Describe, in prose, the sequence of edits and additions. For each edit, name the file and location (function, module) and what to insert or change. Keep it concrete and minimal.
+    Describe, in prose, the sequence of edits and additions. For each edit, name the file and location (function, module) and what to insert or change. Keep it concrete and minimal. Explain how each major edit deepens a module, hides sequencing or policy, removes a special case, or otherwise reduces system complexity.
 
     ## Concrete Steps
 
@@ -137,7 +159,7 @@ Prefer additive code changes followed by subtractions that keep tests passing. P
 
     ## Interfaces and Dependencies
 
-    Be prescriptive. Name the libraries, modules, and services to use and why. Specify the types, traits/interfaces, and function signatures that must exist at the end of the milestone. Prefer stable names and paths such as `crate::module::function` or `package.submodule.Interface`. E.g.:
+    Be prescriptive. Name the libraries, modules, and services to use and why. Specify the types, traits/interfaces, and function signatures that must exist at the end of the milestone. Prefer stable names and paths such as `crate::module::function` or `package.submodule.Interface`. For each major interface, say what detail it hides from its callers. E.g.:
 
     In crates/foo/planner.rs, define:
 

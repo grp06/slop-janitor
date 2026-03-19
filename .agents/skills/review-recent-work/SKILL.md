@@ -13,6 +13,27 @@ Review the latest implemented ExecPlan as a fresh-eyes code review pass. Fix iss
 
 This skill is intended to run immediately after `$implement-execplan`.
 
+## Ousterhout lens
+
+Use John Ousterhout's design philosophy as part of the review standard, not just correctness:
+
+- prefer deep modules over shallow wrappers
+- prefer interfaces that hide sequencing and policy details
+- prefer fewer concepts and fewer special cases
+- prefer simpler mental models over structurally elaborate designs
+- prefer moving complexity behind a stable boundary over redistributing it
+
+Treat these as the main forms of complexity:
+
+- change amplification
+- cognitive load
+- unknown unknowns
+
+The review should answer two questions:
+
+- is the new behavior correct
+- did the implementation actually make the system easier to understand and change
+
 ## Resolving the Base Repo
 
 You may be running from a Codex worktree such as `~/.codex/worktrees/<id>/<repo>/`. Worktrees are shallow copies, so always resolve the base repo path:
@@ -88,12 +109,18 @@ Review the implementation with a fresh-eyes code review mindset. Prioritize:
 - missing or weak tests
 - partial refactors and dead code
 - mismatch with existing project patterns
+- shallow wrappers or pass-through abstractions that hide little
+- leaked sequencing or policy that should have been absorbed behind a boundary
+- new concepts, branches, or configuration that increase interface burden without enough payoff
+- missed opportunities to remove special cases the ExecPlan was supposed to simplify
 
 ### Step 3: Fix obvious issues now
 
 If you find a clear improvement that is well-supported by the code and fits the review scope, make the fix immediately instead of only describing it.
 
 Keep the scope tight. Do not spin the review into a broad refactor unless the bug fix clearly requires it.
+
+Prefer fixes that reduce complexity at the same time as they fix correctness, such as collapsing a leaky helper into an owned module, removing a needless branch, or moving repeated sequencing into one place.
 
 ### Step 4: Re-run verification
 
@@ -107,6 +134,7 @@ Report:
 
 - what you changed
 - what you validated
+- whether the implementation achieved the intended complexity dividend or where it still falls short
 - any remaining risk that was not appropriate to fix in this pass
 
 Do not end with `continue`.
@@ -140,3 +168,4 @@ If Step 0 short-circuits, return exactly `skip` and nothing else.
 - Do not invent problems to justify a higher score.
 - Do not leave findings unfixed when the right change is obvious and safe.
 - Do not replace verification with speculation.
+- Do not ignore design regressions just because tests pass.
