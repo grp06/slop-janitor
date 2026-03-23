@@ -339,6 +339,13 @@ def create_run_logger(*, runs_dir: Path, run_cwd: Path, mode: str, prompt: str |
 
 
 def git_status_has_changes(repo_root: Path, excluded_relative_paths: tuple[str, ...] = ()) -> bool | None:
+    lines = git_status_lines(repo_root, excluded_relative_paths)
+    if lines is None:
+        return None
+    return bool(lines)
+
+
+def git_status_lines(repo_root: Path, excluded_relative_paths: tuple[str, ...] = ()) -> list[str] | None:
     command = ["git", "status", "--short", "--", ".", *[f":(exclude){path}" for path in excluded_relative_paths]]
     status = subprocess.run(
         command,
@@ -349,7 +356,7 @@ def git_status_has_changes(repo_root: Path, excluded_relative_paths: tuple[str, 
     )
     if status.returncode != 0:
         return None
-    return bool(status.stdout.strip())
+    return [line for line in status.stdout.splitlines() if line.strip()]
 
 
 def git_add_all(repo_root: Path, excluded_relative_paths: tuple[str, ...] = ()) -> subprocess.CompletedProcess[str]:
@@ -529,7 +536,7 @@ def maybe_commit_for_stage(
     if stage_index == 1:
         maybe_commit_checkpoint(auto_commit, run_logger, "slop-janitor: initial plan created")
         return
-    if stage.skill_name == "implement-execplan":
+    if stage.skill_name in {"implement-execplan", "review-recent-work"}:
         maybe_commit_checkpoint(auto_commit, run_logger, f"slop-janitor: after {stage.label}")
 
 
@@ -543,7 +550,7 @@ def maybe_commit_for_stages(
     if stage_index == 1:
         maybe_commit_checkpoints(auto_commits, run_logger, "slop-janitor: initial plan created")
         return
-    if stage.skill_name == "implement-execplan":
+    if stage.skill_name in {"implement-execplan", "review-recent-work"}:
         maybe_commit_checkpoints(auto_commits, run_logger, f"slop-janitor: after {stage.label}")
 
 
@@ -560,6 +567,81 @@ def is_cycle_start_stage_index(stage_index: int, *, improvement_count: int, revi
 
 def pending_execplan_path(run_cwd: Path) -> Path:
     return run_cwd / ".agent" / "execplan-pending.md"
+
+
+def relative_path_from_repo(repo_root: Path, path: Path) -> str | None:
+    try:
+        return path.resolve(strict=False).relative_to(repo_root.resolve(strict=False)).as_posix()
+    except ValueError:
+        return None
+
+
+def combine_excluded_relative_paths(*groups: tuple[str, ...]) -> tuple[str, ...]:
+    combined: list[str] = []
+    seen: set[str] = set()
+    for group in groups:
+        for path in group:
+            if path in seen:
+                continue
+            seen.add(path)
+            combined.append(path)
+    return tuple(combined)
+
+
+def allowed_dirty_paths_for_stage(
+    repo_root: Path,
+    run_cwd: Path,
+    stage: Stage,
+    *,
+    phase: str,
+) -> tuple[str, ...]:
+    primary_repo_root = git_repo_root(run_cwd)
+    if primary_repo_root is None:
+        return ()
+    if repo_root.resolve(strict=False) != primary_repo_root.resolve(strict=False):
+        return ()
+    if phase == "start" and stage.skill_name in {"execplan-improve", "implement-execplan"}:
+        pending_relative_path = relative_path_from_repo(repo_root, pending_execplan_path(run_cwd))
+        return (pending_relative_path,) if pending_relative_path is not None else ()
+    if phase == "end" and stage.skill_name == "execplan-improve":
+        pending_relative_path = relative_path_from_repo(repo_root, pending_execplan_path(run_cwd))
+        return (pending_relative_path,) if pending_relative_path is not None else ()
+    return ()
+
+
+def ensure_auto_commit_workspaces_clean(
+    auto_commits: list[AutoCommitState],
+    run_cwd: Path,
+    stage: Stage,
+    *,
+    phase: str,
+) -> None:
+    for auto_commit in auto_commits:
+        if not auto_commit.enabled:
+            continue
+        excluded_relative_paths = combine_excluded_relative_paths(
+            auto_commit.excluded_relative_paths,
+            allowed_dirty_paths_for_stage(auto_commit.repo_root, run_cwd, stage, phase=phase),
+        )
+        status_lines = git_status_lines(auto_commit.repo_root, excluded_relative_paths)
+        if status_lines is None:
+            raise AppServerError(
+                f"stage `{stage.label}` could not inspect git status for auto-managed repo `{auto_commit.repo_root}`"
+            )
+        if not status_lines:
+            continue
+        phase_text = "before starting" if phase == "start" else "after completing"
+        detail = "; ".join(status_lines[:5])
+        if len(status_lines) > 5:
+            detail = f"{detail}; ..."
+        raise AppServerError(
+            f"stage `{stage.label}` {phase_text}: auto-managed repo `{auto_commit.repo_root}` "
+            f"has local changes outside allowed stage artifacts: {detail}"
+        )
+
+
+def stage_should_end_clean(stage: Stage, *, stage_index: int) -> bool:
+    return stage_index == 1 or stage.skill_name in {"implement-execplan", "review-recent-work"}
 
 
 def read_execplan_snapshot(path: Path) -> ExecPlanSnapshot | None:
@@ -699,6 +781,7 @@ def run(
                 cycle_start_execplan_snapshot = read_execplan_snapshot(pending_execplan_path(run_cwd))
             if thread_id is None:
                 raise AppServerError("failed to start a cycle thread")
+            ensure_auto_commit_workspaces_clean(auto_commits, run_cwd, stage, phase="start")
             if stage.skill_name in {"execplan-improve", "implement-execplan"}:
                 ensure_pending_execplan_exists(run_cwd, stage)
             run_logger.write_line(f"=== Stage {index}/{len(stages)}: {stage.label} ===")
@@ -733,6 +816,8 @@ def run(
             if stage.skill_name == "implement-execplan":
                 ensure_pending_execplan_consumed(run_cwd, stage)
             maybe_commit_for_stages(auto_commits, run_logger, stage, stage_index=index)
+            if stage_should_end_clean(stage, stage_index=index):
+                ensure_auto_commit_workspaces_clean(auto_commits, run_cwd, stage, phase="end")
             maybe_delay_between_cycles(
                 stage_index=index,
                 total_stages=len(stages),

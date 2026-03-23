@@ -188,6 +188,8 @@ This split is deliberate. The terminal stays readable while the log remains comp
 
 - Model and sandbox settings are inherited from your current Codex config. In v1, `slop-janitor` only overrides `cwd` and `approvalPolicy`.
 - The thread uses `approvalPolicy: "never"`.
+- Auto-managed repos that start clean are required to stay clean at stage boundaries, except for the pending ExecPlan artifact in the primary repo while plan-improvement or implementation is in progress.
+- Successful `review-recent-work` turns are checkpointed the same way as `implement-execplan` turns when they leave code changes behind, so the next cycle does not plan against ambient uncommitted fixes.
 - If the server asks for approvals, user input, permissions, MCP elicitation, or ChatGPT token refresh, `slop-janitor` responds deterministically, marks the stage failed, and exits after the matching `turn/completed`.
 - Successful turns require real token data from `thread/tokenUsage/updated`. If a turn completes successfully without token usage, the run fails instead of printing invented zeros.
 - Skill paths are validated before the app-server starts, so broken local setup fails early.

@@ -12,9 +12,11 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from slop_janitor.app_server import AppServerError
 from slop_janitor.app_server import AppServerSpawnSpec
 from slop_janitor.cli import build_refactor_stages
 from slop_janitor.cli import build_stages
+from slop_janitor.cli import ensure_auto_commit_workspaces_clean
 from slop_janitor.cli import main
 from slop_janitor.cli import maybe_commit_checkpoints
 from slop_janitor.cli import maybe_commit_checkpoint
@@ -415,6 +417,41 @@ class CliTests(unittest.TestCase):
             ],
         )
 
+    def test_review_stage_creates_checkpoint_commit_in_clean_repo(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        repo_root = Path(tempdir.name)
+        self.init_git_repo(repo_root)
+        run_logger = RunLogger(repo_root / "run.log", run_cwd=repo_root, mode="refactor", prompt=None)
+        try:
+            auto_commit = prepare_auto_commit_state(repo_root, run_logger)
+            self.assertTrue(auto_commit.enabled)
+
+            (repo_root / "review-fix.txt").write_text("review change\n", encoding="utf-8")
+            maybe_commit_for_stage(
+                auto_commit,
+                run_logger,
+                mock.Mock(label="cycle-1-review-recent-work-1", skill_name="review-recent-work"),
+                stage_index=7,
+            )
+        finally:
+            run_logger.close()
+
+        history = subprocess.run(
+            ["git", "log", "--format=%s", "-2"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip().splitlines()
+        self.assertEqual(
+            history[:2],
+            [
+                "slop-janitor: after cycle-1-review-recent-work-1",
+                "initial",
+            ],
+        )
+
     def test_auto_commit_is_disabled_for_dirty_repo(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
@@ -465,6 +502,46 @@ class CliTests(unittest.TestCase):
             run_logger.close()
 
         self.assert_remote_head_matches_local(repo_root, remote_root)
+
+    def test_enabled_linked_repo_must_stay_clean_outside_pending_execplan(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        workspace_root = Path(tempdir.name)
+        cloud_root = workspace_root / "openclaw-cloud"
+        studio_root = workspace_root / "openclaw-studio-private"
+        cloud_root.mkdir()
+        studio_root.mkdir()
+        self.init_git_repo(cloud_root)
+        self.init_git_repo(studio_root)
+        prompt = f"Treat {cloud_root} and {studio_root} as one project"
+        run_logger = RunLogger(cloud_root / "run.log", run_cwd=cloud_root, mode="refactor", prompt=prompt)
+        try:
+            auto_commits = prepare_auto_commit_states(cloud_root, prompt, run_logger)
+            self.assertEqual(len(auto_commits), 2)
+            self.assertTrue(all(auto_commit.enabled for auto_commit in auto_commits))
+
+            (cloud_root / ".agent").mkdir()
+            (cloud_root / ".agent" / "execplan-pending.md").write_text("plan\n", encoding="utf-8")
+            ensure_auto_commit_workspaces_clean(
+                auto_commits,
+                cloud_root,
+                mock.Mock(label="cycle-1-implement-execplan", skill_name="implement-execplan"),
+                phase="start",
+            )
+
+            (studio_root / "review-fix.txt").write_text("dirty\n", encoding="utf-8")
+            with self.assertRaisesRegex(
+                AppServerError,
+                "auto-managed repo .*openclaw-studio-private.*has local changes",
+            ):
+                ensure_auto_commit_workspaces_clean(
+                    auto_commits,
+                    cloud_root,
+                    mock.Mock(label="cycle-1-implement-execplan", skill_name="implement-execplan"),
+                    phase="start",
+                )
+        finally:
+            run_logger.close()
 
     def test_auto_commit_can_checkpoint_prompt_linked_repo(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
@@ -530,6 +607,47 @@ class CliTests(unittest.TestCase):
             )
         self.assert_remote_head_matches_local(cloud_root, cloud_remote)
         self.assert_remote_head_matches_local(studio_root, studio_remote)
+
+    def test_review_stage_changes_in_linked_repo_are_checkpointed_before_next_cycle(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        workspace_root = Path(tempdir.name)
+        cloud_root = workspace_root / "openclaw-cloud"
+        studio_root = workspace_root / "openclaw-studio-private"
+        cloud_root.mkdir()
+        studio_root.mkdir()
+        self.init_git_repo(cloud_root)
+        self.init_git_repo(studio_root)
+        prompt = f"Treat {cloud_root} and {studio_root} as one project"
+
+        exit_code, _, stderr, _ = self.run_pipeline(
+            "review_mutates_linked_repo",
+            argv=[
+                "--mode",
+                "refactor",
+                "--prompt",
+                prompt,
+                "--cycles",
+                "2",
+                "--improvements",
+                "0",
+                "--review",
+                "1",
+            ],
+            target_cwd=cloud_root,
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        history = subprocess.run(
+            ["git", "log", "--format=%s", "-6"],
+            cwd=studio_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip().splitlines()
+        self.assertIn("slop-janitor: after cycle-1-review-recent-work-1", history)
+        self.assertIn("slop-janitor: after cycle-2-review-recent-work-1", history)
 
     def test_refactor_mode_runs_find_best_refactor_with_prompt(self) -> None:
         exit_code, stdout, stderr, record_path = self.run_pipeline(

@@ -126,6 +126,11 @@ class FakeServer:
             raise ProtocolError("run cwd is not set")
         return self.run_cwd / ".agent" / "execplan-pending.md"
 
+    def linked_studio_repo_path(self) -> Path:
+        if self.run_cwd is None:
+            raise ProtocolError("run cwd is not set")
+        return self.run_cwd.parent / "openclaw-studio-private"
+
     def complete_cycle_plan_side_effect(self, stage_index: int) -> None:
         if self.scenario == "refactor_missing_execplan":
             return
@@ -141,6 +146,11 @@ class FakeServer:
             done_path = done_dir / f"completed-{stage_index + 1}.md"
             done_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
             path.unlink()
+        if self.scenario == "review_mutates_linked_repo" and stage["skill_name"] == "review-recent-work":
+            linked_repo = self.linked_studio_repo_path()
+            linked_repo.mkdir(parents=True, exist_ok=True)
+            review_note = linked_repo / f"review-{stage_index + 1}.txt"
+            review_note.write_text(f"review change for stage {stage_index + 1}\n", encoding="utf-8")
 
     def handle_thread_start(self) -> None:
         thread_start = self.expect_request("thread/start")
@@ -374,7 +384,12 @@ class FakeServer:
         if self.scenario == "happy_path":
             self.run_happy_path()
             return
-        if self.scenario in {"refactor_with_prompt", "refactor_without_prompt", "refactor_missing_execplan"}:
+        if self.scenario in {
+            "refactor_with_prompt",
+            "refactor_without_prompt",
+            "refactor_missing_execplan",
+            "review_mutates_linked_repo",
+        }:
             self.run_happy_path()
             return
         raise ProtocolError(f"unsupported scenario: {self.scenario}")
