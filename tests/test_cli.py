@@ -452,19 +452,19 @@ class CliTests(unittest.TestCase):
             ],
         )
 
-    def test_auto_commit_is_disabled_for_dirty_repo(self) -> None:
+    def test_dirty_repo_fails_fast_before_auto_commit_setup(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
         repo_root = Path(tempdir.name)
         self.init_git_repo(repo_root)
         (repo_root / "README.md").write_text("dirty\n", encoding="utf-8")
         run_logger = RunLogger(repo_root / "run.log", run_cwd=repo_root, mode="pipeline", prompt=PROMPT)
-        try:
-            auto_commit = prepare_auto_commit_state(repo_root, run_logger)
-            self.assertFalse(auto_commit.enabled)
-            maybe_commit_checkpoint(auto_commit, run_logger, "slop-janitor: final checkpoint")
-        finally:
-            run_logger.close()
+        with self.assertRaisesRegex(
+            AppServerError,
+            "refusing to start: primary repo .* has pre-existing changes",
+        ):
+            prepare_auto_commit_state(repo_root, run_logger)
+        run_logger.close()
 
         history = subprocess.run(
             ["git", "log", "--format=%s", "-1"],
@@ -474,6 +474,28 @@ class CliTests(unittest.TestCase):
             text=True,
         ).stdout.strip()
         self.assertEqual(history, "initial")
+
+    def test_dirty_linked_repo_fails_fast_before_run_starts(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        workspace_root = Path(tempdir.name)
+        cloud_root = workspace_root / "openclaw-cloud"
+        studio_root = workspace_root / "openclaw-studio-private"
+        cloud_root.mkdir()
+        studio_root.mkdir()
+        self.init_git_repo(cloud_root)
+        self.init_git_repo(studio_root)
+        (studio_root / "README.md").write_text("dirty\n", encoding="utf-8")
+        prompt = f"Treat {cloud_root} and {studio_root} as one project"
+        run_logger = RunLogger(cloud_root / "run.log", run_cwd=cloud_root, mode="refactor", prompt=prompt)
+        try:
+            with self.assertRaisesRegex(
+                AppServerError,
+                "refusing to start: linked repo .*openclaw-studio-private.* has pre-existing changes",
+            ):
+                prepare_auto_commit_states(cloud_root, prompt, run_logger)
+        finally:
+            run_logger.close()
 
     def test_auto_commit_pushes_final_checkpoint_to_tracking_remote(self) -> None:
         tempdir = tempfile.TemporaryDirectory()

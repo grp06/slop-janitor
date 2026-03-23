@@ -403,8 +403,10 @@ def build_auto_commit_state(path: Path, run_logger: RunLogger, *, label: str) ->
         run_logger.write_line(f"[commit] auto-commit disabled for {label}: failed to inspect git status")
         return AutoCommitState(enabled=False, repo_root=repo_root)
     if has_changes:
-        run_logger.write_line(f"[commit] auto-commit disabled for {label}: repository had pre-existing changes at start")
-        return AutoCommitState(enabled=False, repo_root=repo_root)
+        raise AppServerError(
+            f"refusing to start: {label} `{repo_root}` has pre-existing changes. "
+            "Commit, stash, or discard them before running slop-janitor."
+        )
     run_logger.write_line(f"[commit] auto-commit enabled for {label}: {repo_root}")
     return AutoCommitState(
         enabled=True,
@@ -739,7 +741,6 @@ def run(
             review_count=args.review,
             delay_between_cycles_minutes=args.delay_between_cycles_minutes,
         )
-        auto_commits = prepare_auto_commit_states(run_cwd, args.prompt, run_logger)
         stages = build_stages(
             args.mode,
             args.prompt,
@@ -756,6 +757,8 @@ def run(
             client_spawn_spec = default_app_server_spawn_spec(codex_workspace)
         else:
             client_spawn_spec = spawn_spec
+
+        auto_commits = prepare_auto_commit_states(run_cwd, args.prompt, run_logger)
 
         client = AppServerClient(client_spawn_spec, run_logger)
         client.start()

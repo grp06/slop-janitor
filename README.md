@@ -186,6 +186,7 @@ This split is deliberate. The terminal stays readable while the log remains comp
 
 ## Reliability Contract
 
+- `slop-janitor` requires a clean starting state in the primary repo and every linked repo it auto-manages. If any of them have pre-existing changes, it exits before stage 1 and tells you to commit, stash, or discard them first.
 - Model and sandbox settings are inherited from your current Codex config. In v1, `slop-janitor` only overrides `cwd` and `approvalPolicy`.
 - The thread uses `approvalPolicy: "never"`.
 - Auto-managed repos that start clean are required to stay clean at stage boundaries, except for the pending ExecPlan artifact in the primary repo while plan-improvement or implementation is in progress.
