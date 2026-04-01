@@ -18,13 +18,19 @@ REFACTOR_STAGE_SUFFIX = (
 )
 
 
-def build_follow_up_stages(*, improvement_count: int, review_count: int) -> list[dict[str, str]]:
+def build_follow_up_stages(
+    *,
+    improvement_count: int,
+    review_count: int,
+    improve_skill_name: str,
+    review_skill_name: str,
+) -> list[dict[str, str]]:
     return [
         *[
             {
-                "skill_name": "execplan-improve",
-                "skill_path": f"{SKILLS_ROOT}/execplan-improve/SKILL.md",
-                "text": "$execplan-improve improve the pending execution plan at .agent/execplan-pending.md",
+                "skill_name": improve_skill_name,
+                "skill_path": f"{SKILLS_ROOT}/{improve_skill_name}/SKILL.md",
+                "text": f"${improve_skill_name} improve the pending execution plan at .agent/execplan-pending.md",
             }
             for _ in range(improvement_count)
         ],
@@ -35,16 +41,24 @@ def build_follow_up_stages(*, improvement_count: int, review_count: int) -> list
         },
         *[
             {
-                "skill_name": "review-recent-work",
-                "skill_path": f"{SKILLS_ROOT}/review-recent-work/SKILL.md",
-                "text": "$review-recent-work review the most recently implemented ExecPlan work",
+                "skill_name": review_skill_name,
+                "skill_path": f"{SKILLS_ROOT}/{review_skill_name}/SKILL.md",
+                "text": f"${review_skill_name} review the most recently implemented ExecPlan work",
             }
             for _ in range(review_count)
         ],
     ]
 
 
-def build_expected_stages(prompt: str, *, cycles: int, improvement_count: int, review_count: int) -> list[dict[str, str]]:
+def build_expected_stages(
+    prompt: str,
+    *,
+    cycles: int,
+    improvement_count: int,
+    review_count: int,
+    improve_skill_name: str,
+    review_skill_name: str,
+) -> list[dict[str, str]]:
     stages: list[dict[str, str]] = []
     for _ in range(cycles):
         stages.append(
@@ -54,7 +68,14 @@ def build_expected_stages(prompt: str, *, cycles: int, improvement_count: int, r
                 "text": f"$execplan-create {prompt}",
             }
         )
-        stages.extend(build_follow_up_stages(improvement_count=improvement_count, review_count=review_count))
+        stages.extend(
+            build_follow_up_stages(
+                improvement_count=improvement_count,
+                review_count=review_count,
+                improve_skill_name=improve_skill_name,
+                review_skill_name=review_skill_name,
+            )
+        )
     return stages
 
 
@@ -64,6 +85,8 @@ def build_expected_refactor_stages(
     cycles: int,
     improvement_count: int,
     review_count: int,
+    improve_skill_name: str,
+    review_skill_name: str,
 ) -> list[dict[str, str]]:
     if prompt:
         refactor_prompt = prompt
@@ -79,7 +102,14 @@ def build_expected_refactor_stages(
                 "text": text,
             }
         )
-        stages.extend(build_follow_up_stages(improvement_count=improvement_count, review_count=review_count))
+        stages.extend(
+            build_follow_up_stages(
+                improvement_count=improvement_count,
+                review_count=review_count,
+                improve_skill_name=improve_skill_name,
+                review_skill_name=review_skill_name,
+            )
+        )
     return stages
 
 
@@ -101,7 +131,9 @@ class FakeServer:
             "prompt": PROMPT,
             "cycles": 1,
             "improvements": 4,
+            "improve_skill": "execplan-improve-subagents",
             "review": 5,
+            "review_skill": "review-recent-work-subagents",
         }
         if config_path is not None:
             self.config.update(json.loads(config_path.read_text(encoding="utf-8")))
@@ -111,6 +143,8 @@ class FakeServer:
                 cycles=int(self.config["cycles"]),
                 improvement_count=int(self.config["improvements"]),
                 review_count=int(self.config["review"]),
+                improve_skill_name=str(self.config["improve_skill"]),
+                review_skill_name=str(self.config["review_skill"]),
             )
         else:
             self.expected_stages = build_expected_stages(
@@ -118,6 +152,8 @@ class FakeServer:
                 cycles=int(self.config["cycles"]),
                 improvement_count=int(self.config["improvements"]),
                 review_count=int(self.config["review"]),
+                improve_skill_name=str(self.config["improve_skill"]),
+                review_skill_name=str(self.config["review_skill"]),
             )
         self.error: str | None = None
 
@@ -146,7 +182,10 @@ class FakeServer:
             done_path = done_dir / f"completed-{stage_index + 1}.md"
             done_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
             path.unlink()
-        if self.scenario == "review_mutates_linked_repo" and stage["skill_name"] == "review-recent-work":
+        if self.scenario == "review_mutates_linked_repo" and stage["skill_name"] in {
+            "review-recent-work",
+            "review-recent-work-subagents",
+        }:
             linked_repo = self.linked_studio_repo_path()
             linked_repo.mkdir(parents=True, exist_ok=True)
             review_note = linked_repo / f"review-{stage_index + 1}.txt"

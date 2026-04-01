@@ -26,11 +26,12 @@ It also writes a complete run log, so the session is inspectable after the fact 
 By default, one cycle is:
 
 1. `execplan-create`
-2. `execplan-improve` x4
+2. `execplan-improve-subagents` x4
 3. `implement-execplan`
-4. `review-recent-work` x5
+4. `review-recent-work-subagents` x5
 
 You can change the number of full cycles, improvement passes, and review passes.
+You can also swap the follow-up skills with `--improve-skill` and `--review-skill`.
 
 ## Bundled Skills
 
@@ -38,11 +39,11 @@ The loop is built from a small set of repo-local skills in `.agents/skills`:
 
 - `find-best-refactor`: finds the highest-leverage refactor.
 - `execplan-create`: turns a prompt into an exec plan.
-- `execplan-improve`: pressure-tests and rewrites that plan against the real codebase.
+- `execplan-improve-subagents`: pressure-tests and rewrites that plan with a two-wave subagent audit.
 - `implement-execplan`: implements the plan.
-- `review-recent-work`: reviews the result with fresh eyes.
+- `review-recent-work-subagents`: reviews the result with a two-wave subagent review-and-fix pass.
 
-The most important step is `execplan-improve`. Fixing a weak plan is cheaper than fixing bugs later.
+The most important step is `execplan-improve-subagents`. Fixing a weak plan is cheaper than fixing bugs later.
 
 ## Prerequisites
 
@@ -112,6 +113,13 @@ cd /path/to/target-repo
 /path/to/slop-janitor/slop-janitor --prompt "help me build a CRM" --cycles 2 --improvements 5 --review 3
 ```
 
+Use the non-subagent follow-up skills instead:
+
+```bash
+cd /path/to/target-repo
+/path/to/slop-janitor/slop-janitor --mode refactor --improvements 5 --improve-skill execplan-improve --review 5 --review-skill review-recent-work
+```
+
 `slop-janitor` always targets the directory you launch it from, not the `slop-janitor` repository.
 
 ## Modes And Counts
@@ -122,15 +130,21 @@ cd /path/to/target-repo
 
 `--cycles` controls how many times the full loop runs.
 
-`--improvements` controls how many `execplan-improve` turns run inside each cycle.
+`--improvements` controls how many `execplan-improve-subagents` turns run inside each cycle.
 
-`--review` controls how many `review-recent-work` turns run inside each cycle.
+`--review` controls how many `review-recent-work-subagents` turns run inside each cycle.
+
+`--improve-skill` selects the planning-improvement skill for each improvement pass. Choices are `execplan-improve-subagents` and `execplan-improve`.
+
+`--review-skill` selects the review skill for each review pass. Choices are `review-recent-work-subagents` and `review-recent-work`.
 
 Defaults:
 
 - `--cycles 1`
 - `--improvements 4`
+- `--improve-skill execplan-improve-subagents`
 - `--review 5`
+- `--review-skill review-recent-work-subagents`
 
 When `--cycles` is greater than 1, stage labels in the run log are cycle-qualified, for example `cycle-2-execplan-create`.
 
@@ -190,7 +204,7 @@ This split is deliberate. The terminal stays readable while the log remains comp
 - Model and sandbox settings are inherited from your current Codex config. In v1, `slop-janitor` only overrides `cwd` and `approvalPolicy`.
 - The thread uses `approvalPolicy: "never"`.
 - Auto-managed repos that start clean are required to stay clean at stage boundaries, except for the pending ExecPlan artifact in the primary repo while plan-improvement or implementation is in progress.
-- Successful `review-recent-work` turns are checkpointed the same way as `implement-execplan` turns when they leave code changes behind, so the next cycle does not plan against ambient uncommitted fixes.
+- Successful `review-recent-work` and `review-recent-work-subagents` turns are checkpointed the same way as `implement-execplan` turns when they leave code changes behind, so the next cycle does not plan against ambient uncommitted fixes.
 - If the server asks for approvals, user input, permissions, MCP elicitation, or ChatGPT token refresh, `slop-janitor` responds deterministically, marks the stage failed, and exits after the matching `turn/completed`.
 - Successful turns require real token data from `thread/tokenUsage/updated`. If a turn completes successfully without token usage, the run fails instead of printing invented zeros.
 - Skill paths are validated before the app-server starts, so broken local setup fails early.

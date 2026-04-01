@@ -1,0 +1,4 @@
+interface:
+  display_name: "Review Recent Work Subagents"
+  short_description: "Multi-agent review and fix for latest ExecPlan work"
+  default_prompt: "Use $review-recent-work-subagents to run a multi-agent review of the most recently implemented ExecPlan, implement the highest-confidence fixes, rerun verification, and report the result."

@@ -37,13 +37,23 @@ CODEX_CLI_PREFIX = (
     "--",
 )
 CLIENT_VERSION = "0.1.0"
+IMPROVE_SKILL_CHOICES = (
+    "execplan-improve",
+    "execplan-improve-subagents",
+)
+REVIEW_SKILL_CHOICES = (
+    "review-recent-work",
+    "review-recent-work-subagents",
+)
 
 SKILL_PATHS = {
     "execplan-create": SKILLS_ROOT / "execplan-create" / "SKILL.md",
     "execplan-improve": SKILLS_ROOT / "execplan-improve" / "SKILL.md",
+    "execplan-improve-subagents": SKILLS_ROOT / "execplan-improve-subagents" / "SKILL.md",
     "find-best-refactor": SKILLS_ROOT / "find-best-refactor" / "SKILL.md",
     "implement-execplan": SKILLS_ROOT / "implement-execplan" / "SKILL.md",
     "review-recent-work": SKILLS_ROOT / "review-recent-work" / "SKILL.md",
+    "review-recent-work-subagents": SKILLS_ROOT / "review-recent-work-subagents" / "SKILL.md",
 }
 
 
@@ -66,14 +76,22 @@ def stage_label(base_label: str, *, cycle_index: int, cycles: int) -> str:
     return f"cycle-{cycle_index}-{base_label}"
 
 
-def build_follow_up_stages(*, cycle_index: int, cycles: int, improvement_count: int, review_count: int) -> list[Stage]:
+def build_follow_up_stages(
+    *,
+    cycle_index: int,
+    cycles: int,
+    improvement_count: int,
+    review_count: int,
+    improve_skill_name: str,
+    review_skill_name: str,
+) -> list[Stage]:
     return [
         *[
             Stage(
-                label=stage_label(f"execplan-improve-{index}", cycle_index=cycle_index, cycles=cycles),
-                skill_name="execplan-improve",
-                skill_path=str(SKILL_PATHS["execplan-improve"]),
-                text="$execplan-improve improve the pending execution plan at .agent/execplan-pending.md",
+                label=stage_label(f"{improve_skill_name}-{index}", cycle_index=cycle_index, cycles=cycles),
+                skill_name=improve_skill_name,
+                skill_path=str(SKILL_PATHS[improve_skill_name]),
+                text=f"${improve_skill_name} improve the pending execution plan at .agent/execplan-pending.md",
             )
             for index in range(1, improvement_count + 1)
         ],
@@ -85,17 +103,25 @@ def build_follow_up_stages(*, cycle_index: int, cycles: int, improvement_count: 
         ),
         *[
             Stage(
-                label=stage_label(f"review-recent-work-{index}", cycle_index=cycle_index, cycles=cycles),
-                skill_name="review-recent-work",
-                skill_path=str(SKILL_PATHS["review-recent-work"]),
-                text="$review-recent-work review the most recently implemented ExecPlan work",
+                label=stage_label(f"{review_skill_name}-{index}", cycle_index=cycle_index, cycles=cycles),
+                skill_name=review_skill_name,
+                skill_path=str(SKILL_PATHS[review_skill_name]),
+                text=f"${review_skill_name} review the most recently implemented ExecPlan work",
             )
             for index in range(1, review_count + 1)
         ],
     ]
 
 
-def build_pipeline_stages(prompt: str, *, cycles: int, improvement_count: int, review_count: int) -> list[Stage]:
+def build_pipeline_stages(
+    prompt: str,
+    *,
+    cycles: int,
+    improvement_count: int,
+    review_count: int,
+    improve_skill_name: str,
+    review_skill_name: str,
+) -> list[Stage]:
     stages: list[Stage] = []
     for cycle_index in range(1, cycles + 1):
         stages.append(
@@ -112,6 +138,8 @@ def build_pipeline_stages(prompt: str, *, cycles: int, improvement_count: int, r
                 cycles=cycles,
                 improvement_count=improvement_count,
                 review_count=review_count,
+                improve_skill_name=improve_skill_name,
+                review_skill_name=review_skill_name,
             )
         )
     return stages
@@ -123,6 +151,8 @@ def build_refactor_stages(
     cycles: int,
     improvement_count: int,
     review_count: int,
+    improve_skill_name: str,
+    review_skill_name: str,
 ) -> list[Stage]:
     if prompt:
         refactor_prompt = prompt
@@ -151,6 +181,8 @@ def build_refactor_stages(
                 cycles=cycles,
                 improvement_count=improvement_count,
                 review_count=review_count,
+                improve_skill_name=improve_skill_name,
+                review_skill_name=review_skill_name,
             )
         )
     return stages
@@ -174,6 +206,8 @@ def build_stages(
     cycles: int,
     improvement_count: int,
     review_count: int,
+    improve_skill_name: str,
+    review_skill_name: str,
 ) -> list[Stage]:
     validate_counts(
         cycles=cycles,
@@ -188,6 +222,8 @@ def build_stages(
             cycles=cycles,
             improvement_count=improvement_count,
             review_count=review_count,
+            improve_skill_name=improve_skill_name,
+            review_skill_name=review_skill_name,
         )
     if mode == "refactor":
         return build_refactor_stages(
@@ -195,6 +231,8 @@ def build_stages(
             cycles=cycles,
             improvement_count=improvement_count,
             review_count=review_count,
+            improve_skill_name=improve_skill_name,
+            review_skill_name=review_skill_name,
         )
     raise AppServerError(f"unsupported mode: {mode}")
 
@@ -318,7 +356,9 @@ def build_run_parser() -> argparse.ArgumentParser:
     parser.add_argument("--prompt")
     parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument("--improvements", type=int, default=4)
+    parser.add_argument("--improve-skill", choices=IMPROVE_SKILL_CHOICES, default="execplan-improve-subagents")
     parser.add_argument("--review", type=int, default=5)
+    parser.add_argument("--review-skill", choices=REVIEW_SKILL_CHOICES, default="review-recent-work-subagents")
     parser.add_argument("--delay-between-cycles-minutes", type=float, default=0.0)
     return parser
 
@@ -538,7 +578,7 @@ def maybe_commit_for_stage(
     if stage_index == 1:
         maybe_commit_checkpoint(auto_commit, run_logger, "slop-janitor: initial plan created")
         return
-    if stage.skill_name in {"implement-execplan", "review-recent-work"}:
+    if stage.skill_name in {"implement-execplan", *REVIEW_SKILL_CHOICES}:
         maybe_commit_checkpoint(auto_commit, run_logger, f"slop-janitor: after {stage.label}")
 
 
@@ -552,7 +592,7 @@ def maybe_commit_for_stages(
     if stage_index == 1:
         maybe_commit_checkpoints(auto_commits, run_logger, "slop-janitor: initial plan created")
         return
-    if stage.skill_name in {"implement-execplan", "review-recent-work"}:
+    if stage.skill_name in {"implement-execplan", *REVIEW_SKILL_CHOICES}:
         maybe_commit_checkpoints(auto_commits, run_logger, f"slop-janitor: after {stage.label}")
 
 
@@ -602,10 +642,10 @@ def allowed_dirty_paths_for_stage(
         return ()
     if repo_root.resolve(strict=False) != primary_repo_root.resolve(strict=False):
         return ()
-    if phase == "start" and stage.skill_name in {"execplan-improve", "implement-execplan"}:
+    if phase == "start" and stage.skill_name in {*IMPROVE_SKILL_CHOICES, "implement-execplan"}:
         pending_relative_path = relative_path_from_repo(repo_root, pending_execplan_path(run_cwd))
         return (pending_relative_path,) if pending_relative_path is not None else ()
-    if phase == "end" and stage.skill_name == "execplan-improve":
+    if phase == "end" and stage.skill_name in IMPROVE_SKILL_CHOICES:
         pending_relative_path = relative_path_from_repo(repo_root, pending_execplan_path(run_cwd))
         return (pending_relative_path,) if pending_relative_path is not None else ()
     return ()
@@ -643,7 +683,7 @@ def ensure_auto_commit_workspaces_clean(
 
 
 def stage_should_end_clean(stage: Stage, *, stage_index: int) -> bool:
-    return stage_index == 1 or stage.skill_name in {"implement-execplan", "review-recent-work"}
+    return stage_index == 1 or stage.skill_name in {"implement-execplan", *REVIEW_SKILL_CHOICES}
 
 
 def read_execplan_snapshot(path: Path) -> ExecPlanSnapshot | None:
@@ -732,7 +772,9 @@ def run(
         )
         run_logger.write_line(f"cycles={args.cycles}")
         run_logger.write_line(f"improvements={args.improvements}")
+        run_logger.write_line(f"improveSkill={args.improve_skill}")
         run_logger.write_line(f"review={args.review}")
+        run_logger.write_line(f"reviewSkill={args.review_skill}")
         run_logger.write_line(f"delayBetweenCyclesMinutes={args.delay_between_cycles_minutes}")
         run_logger.write_line("")
         validate_counts(
@@ -747,6 +789,8 @@ def run(
             cycles=args.cycles,
             improvement_count=args.improvements,
             review_count=args.review,
+            improve_skill_name=args.improve_skill,
+            review_skill_name=args.review_skill,
         )
         validate_skills(stages)
 
@@ -785,7 +829,7 @@ def run(
             if thread_id is None:
                 raise AppServerError("failed to start a cycle thread")
             ensure_auto_commit_workspaces_clean(auto_commits, run_cwd, stage, phase="start")
-            if stage.skill_name in {"execplan-improve", "implement-execplan"}:
+            if stage.skill_name in {*IMPROVE_SKILL_CHOICES, "implement-execplan"}:
                 ensure_pending_execplan_exists(run_cwd, stage)
             run_logger.write_line(f"=== Stage {index}/{len(stages)}: {stage.label} ===")
             result = client.run_turn(thread_id, stage)

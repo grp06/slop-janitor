@@ -8,9 +8,11 @@ dest_root="${repo_root}/.agents/skills"
 skills=(
   execplan-create
   execplan-improve
+  execplan-improve-subagents
   find-best-refactor
   implement-execplan
   review-recent-work
+  review-recent-work-subagents
 )
 
 command -v rsync >/dev/null 2>&1 || {
