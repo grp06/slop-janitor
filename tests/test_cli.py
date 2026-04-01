@@ -397,6 +397,27 @@ class CliTests(unittest.TestCase):
                 run_logger,
                 mock.Mock(label="find-best-refactor", skill_name="find-best-refactor"),
                 stage_index=1,
+                improvement_count=1,
+                review_count=1,
+            )
+            self.assertEqual(
+                subprocess.run(
+                    ["git", "log", "--format=%s", "-1"],
+                    cwd=repo_root,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip(),
+                "initial",
+            )
+
+            maybe_commit_for_stage(
+                auto_commit,
+                run_logger,
+                mock.Mock(label="execplan-improve-subagents-1", skill_name="execplan-improve-subagents"),
+                stage_index=2,
+                improvement_count=1,
+                review_count=1,
             )
 
             (repo_root / "app.py").write_text("print('implemented')\n", encoding="utf-8")
@@ -404,32 +425,48 @@ class CliTests(unittest.TestCase):
                 auto_commit,
                 run_logger,
                 mock.Mock(label="implement-execplan", skill_name="implement-execplan"),
-                stage_index=6,
+                stage_index=3,
+                improvement_count=1,
+                review_count=1,
             )
 
             (repo_root / "notes.txt").write_text("final review changes\n", encoding="utf-8")
+            maybe_commit_for_stage(
+                auto_commit,
+                run_logger,
+                mock.Mock(
+                    label="review-recent-work-subagents-1",
+                    skill_name="review-recent-work-subagents",
+                ),
+                stage_index=4,
+                improvement_count=1,
+                review_count=1,
+            )
+
+            (repo_root / "scratch.txt").write_text("leftover cleanup\n", encoding="utf-8")
             maybe_commit_checkpoint(auto_commit, run_logger, "slop-janitor: final checkpoint")
         finally:
             run_logger.close()
 
         history = subprocess.run(
-            ["git", "log", "--format=%s", "-4"],
+            ["git", "log", "--format=%s", "-5"],
             cwd=repo_root,
             check=True,
             capture_output=True,
             text=True,
         ).stdout.strip().splitlines()
         self.assertEqual(
-            history[:4],
+            history[:5],
             [
                 "slop-janitor: final checkpoint",
+                "slop-janitor: after review-recent-work-subagents-1",
                 "slop-janitor: after implement-execplan",
-                "slop-janitor: initial plan created",
+                "slop-janitor: after execplan-improve-subagents-1",
                 "initial",
             ],
         )
 
-    def test_review_stage_creates_checkpoint_commit_in_clean_repo(self) -> None:
+    def test_non_final_review_stage_does_not_checkpoint(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
         repo_root = Path(tempdir.name)
@@ -447,27 +484,26 @@ class CliTests(unittest.TestCase):
                     label="cycle-1-review-recent-work-subagents-1",
                     skill_name="review-recent-work-subagents",
                 ),
-                stage_index=7,
+                stage_index=3,
+                improvement_count=0,
+                review_count=2,
             )
         finally:
             run_logger.close()
 
         history = subprocess.run(
-            ["git", "log", "--format=%s", "-2"],
+            ["git", "log", "--format=%s", "-1"],
             cwd=repo_root,
             check=True,
             capture_output=True,
             text=True,
-        ).stdout.strip().splitlines()
+        ).stdout.strip()
         self.assertEqual(
-            history[:2],
-            [
-                "slop-janitor: after cycle-1-review-recent-work-subagents-1",
-                "initial",
-            ],
+            history,
+            "initial",
         )
 
-    def test_non_subagent_review_stage_creates_checkpoint_commit_in_clean_repo(self) -> None:
+    def test_final_review_stage_creates_checkpoint_commit_in_clean_repo(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
         repo_root = Path(tempdir.name)
@@ -482,10 +518,12 @@ class CliTests(unittest.TestCase):
                 auto_commit,
                 run_logger,
                 mock.Mock(
-                    label="cycle-1-review-recent-work-1",
-                    skill_name="review-recent-work",
+                    label="cycle-1-review-recent-work-subagents-2",
+                    skill_name="review-recent-work-subagents",
                 ),
-                stage_index=7,
+                stage_index=5,
+                improvement_count=0,
+                review_count=2,
             )
         finally:
             run_logger.close()
@@ -500,7 +538,47 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             history[:2],
             [
-                "slop-janitor: after cycle-1-review-recent-work-1",
+                "slop-janitor: after cycle-1-review-recent-work-subagents-2",
+                "initial",
+            ],
+        )
+
+    def test_final_non_subagent_review_stage_creates_checkpoint_commit_in_clean_repo(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        repo_root = Path(tempdir.name)
+        self.init_git_repo(repo_root)
+        run_logger = RunLogger(repo_root / "run.log", run_cwd=repo_root, mode="refactor", prompt=None)
+        try:
+            auto_commit = prepare_auto_commit_state(repo_root, run_logger)
+            self.assertTrue(auto_commit.enabled)
+
+            (repo_root / "review-fix.txt").write_text("review change\n", encoding="utf-8")
+            maybe_commit_for_stage(
+                auto_commit,
+                run_logger,
+                mock.Mock(
+                    label="cycle-1-review-recent-work-2",
+                    skill_name="review-recent-work",
+                ),
+                stage_index=5,
+                improvement_count=0,
+                review_count=2,
+            )
+        finally:
+            run_logger.close()
+
+        history = subprocess.run(
+            ["git", "log", "--format=%s", "-2"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip().splitlines()
+        self.assertEqual(
+            history[:2],
+            [
+                "slop-janitor: after cycle-1-review-recent-work-2",
                 "initial",
             ],
         )
@@ -568,6 +646,8 @@ class CliTests(unittest.TestCase):
                 run_logger,
                 mock.Mock(label="execplan-create", skill_name="execplan-create"),
                 stage_index=1,
+                improvement_count=0,
+                review_count=0,
             )
 
             (repo_root / "notes.txt").write_text("final review changes\n", encoding="utf-8")
@@ -645,6 +725,8 @@ class CliTests(unittest.TestCase):
                 run_logger,
                 mock.Mock(label="find-best-refactor", skill_name="find-best-refactor"),
                 stage_index=1,
+                improvement_count=0,
+                review_count=0,
             )
 
             (cloud_root / "app.py").write_text("print('cloud')\n", encoding="utf-8")
@@ -654,6 +736,8 @@ class CliTests(unittest.TestCase):
                 run_logger,
                 mock.Mock(label="implement-execplan", skill_name="implement-execplan"),
                 stage_index=6,
+                improvement_count=4,
+                review_count=0,
             )
 
             (cloud_root / "notes.txt").write_text("final\n", encoding="utf-8")
@@ -676,7 +760,7 @@ class CliTests(unittest.TestCase):
                 [
                     "slop-janitor: final checkpoint",
                     "slop-janitor: after implement-execplan",
-                    "slop-janitor: initial plan created",
+                    "slop-janitor: after find-best-refactor",
                     "initial",
                 ],
             )
@@ -782,6 +866,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertEqual(len(turn_starts), 11)
         self.assertNotIn("=== Stage 1/11: find-best-refactor ===", stdout)
+        self.assertIn("========== Workflow Cycle 1/1 ==========", stdout)
+        self.assertIn("--- Refactor Planning ---", stdout)
+        self.assertIn("Stage 1/11 · find-best-refactor", stdout)
         self.assertIn("=== Stage 1/11: find-best-refactor ===", log_text)
         self.assertIn("=== Stage 11/11: review-recent-work-subagents-5 ===", log_text)
         text_input = turn_starts[0]["params"]["input"][0]
@@ -853,7 +940,7 @@ class CliTests(unittest.TestCase):
         )
 
     def test_custom_cycles_improvements_and_review_counts(self) -> None:
-        exit_code, _, stderr, record_path = self.run_pipeline(
+        exit_code, stdout, stderr, record_path = self.run_pipeline(
             "happy_path",
             argv=[
                 "--prompt",
@@ -875,6 +962,10 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
         self.assertEqual(len(turn_starts), 10)
+        self.assertIn("========== Workflow Cycle 1/2 ==========", stdout)
+        self.assertIn("========== Workflow Cycle 2/2 ==========", stdout)
+        self.assertIn("--- Improvement Pass 1/2 ---", stdout)
+        self.assertIn("--- Review Pass 1/1 ---", stdout)
         self.assertIn("=== Stage 1/10: cycle-1-execplan-create ===", log_text)
         self.assertIn("=== Stage 10/10: cycle-2-review-recent-work-subagents-1 ===", log_text)
         self.assertEqual(turn_starts[0]["params"]["input"][0]["text"], f"$execplan-create {PROMPT}")
@@ -927,6 +1018,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(stderr, "")
         self.assertIsNone(record["error"])
         self.assertTrue(log_path.name.startswith(f"{target_dir.name}-"))
+        self.assertIn("========== Workflow Cycle 1/1 ==========", stdout)
+        self.assertIn("--- ExecPlan Planning ---", stdout)
+        self.assertIn("[Response]", stdout)
         self.assertIn("Planning stage 1.", stdout)
         self.assertNotIn("running tests", stdout)
         self.assertNotIn("[fileChange] wrote files", stdout)
@@ -954,6 +1048,16 @@ class CliTests(unittest.TestCase):
         self.assertEqual(methods.count("turn/start"), 11)
         initialize = next(message for message in inbound if message.get("method") == "initialize")
         self.assertTrue(initialize["params"]["capabilities"]["experimentalApi"])
+
+    def test_thread_start_requests_workspace_write_sandbox(self) -> None:
+        exit_code, _, _, record_path = self.run_pipeline("happy_path")
+        record = self.read_json(record_path)
+        thread_start = next(
+            message for message in self.inbound_messages(record) if message.get("method") == "thread/start"
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(thread_start["params"]["sandbox"], "workspace-write")
 
     def test_multi_cycle_run_starts_a_fresh_thread_each_cycle(self) -> None:
         exit_code, _, _, record_path = self.run_pipeline(

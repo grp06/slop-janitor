@@ -283,6 +283,7 @@ def format_token_usage(snapshot: TokenUsageSnapshot) -> str:
 
 
 def write_token_footer(run_logger: RunLogger, summary: TokenUsageSummary) -> None:
+    run_logger.write_line("", to_terminal=True)
     run_logger.write_line(
         f"Tokens this turn: {format_token_usage(summary.last)}",
         to_terminal=True,
@@ -291,6 +292,7 @@ def write_token_footer(run_logger: RunLogger, summary: TokenUsageSummary) -> Non
         f"Tokens cumulative: {format_token_usage(summary.total)}",
         to_terminal=True,
     )
+    run_logger.write_line("", to_terminal=True)
 
 
 def extract_root_config_args(args: list[str]) -> tuple[list[str], list[str]]:
@@ -574,12 +576,17 @@ def maybe_commit_for_stage(
     stage: Stage,
     *,
     stage_index: int,
+    improvement_count: int,
+    review_count: int,
 ) -> None:
-    if stage_index == 1:
-        maybe_commit_checkpoint(auto_commit, run_logger, "slop-janitor: initial plan created")
-        return
-    if stage.skill_name in {"implement-execplan", *REVIEW_SKILL_CHOICES}:
-        maybe_commit_checkpoint(auto_commit, run_logger, f"slop-janitor: after {stage.label}")
+    message = checkpoint_message_for_stage(
+        stage,
+        stage_index=stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    )
+    if message is not None:
+        maybe_commit_checkpoint(auto_commit, run_logger, message)
 
 
 def maybe_commit_for_stages(
@@ -588,23 +595,196 @@ def maybe_commit_for_stages(
     stage: Stage,
     *,
     stage_index: int,
+    improvement_count: int,
+    review_count: int,
 ) -> None:
-    if stage_index == 1:
-        maybe_commit_checkpoints(auto_commits, run_logger, "slop-janitor: initial plan created")
-        return
-    if stage.skill_name in {"implement-execplan", *REVIEW_SKILL_CHOICES}:
-        maybe_commit_checkpoints(auto_commits, run_logger, f"slop-janitor: after {stage.label}")
+    message = checkpoint_message_for_stage(
+        stage,
+        stage_index=stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    )
+    if message is not None:
+        maybe_commit_checkpoints(auto_commits, run_logger, message)
 
 
 def stages_per_cycle(*, improvement_count: int, review_count: int) -> int:
     return improvement_count + review_count + 2
 
 
-def is_cycle_start_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
-    return (stage_index - 1) % stages_per_cycle(
+def cycle_number_for_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> int:
+    return ((stage_index - 1) // stages_per_cycle(
         improvement_count=improvement_count,
         review_count=review_count,
-    ) == 0
+    )) + 1
+
+
+def cycle_stage_position(stage_index: int, *, improvement_count: int, review_count: int) -> int:
+    return ((stage_index - 1) % stages_per_cycle(
+        improvement_count=improvement_count,
+        review_count=review_count,
+    )) + 1
+
+
+def final_planning_stage_position(*, improvement_count: int) -> int:
+    return improvement_count + 1
+
+
+def implementation_stage_position(*, improvement_count: int) -> int:
+    return final_planning_stage_position(improvement_count=improvement_count) + 1
+
+
+def is_cycle_start_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
+    return cycle_stage_position(
+        stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    ) == 1
+
+
+def is_final_planning_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
+    return cycle_stage_position(
+        stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    ) == final_planning_stage_position(improvement_count=improvement_count)
+
+
+def is_implementation_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
+    return cycle_stage_position(
+        stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    ) == implementation_stage_position(improvement_count=improvement_count)
+
+
+def is_final_review_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
+    if review_count == 0:
+        return False
+    return cycle_stage_position(
+        stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    ) == stages_per_cycle(
+        improvement_count=improvement_count,
+        review_count=review_count,
+    )
+
+
+def is_follow_on_review_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
+    if review_count <= 1:
+        return False
+    return cycle_stage_position(
+        stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    ) > implementation_stage_position(improvement_count=improvement_count) + 1
+
+
+def checkpoint_message_for_stage(
+    stage: Stage,
+    *,
+    stage_index: int,
+    improvement_count: int,
+    review_count: int,
+) -> str | None:
+    if stage_should_checkpoint(
+        stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    ):
+        return f"slop-janitor: after {stage.label}"
+    return None
+
+
+def stage_should_checkpoint(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
+    return any(
+        (
+            is_final_planning_stage_index(
+                stage_index,
+                improvement_count=improvement_count,
+                review_count=review_count,
+            ),
+            is_implementation_stage_index(
+                stage_index,
+                improvement_count=improvement_count,
+                review_count=review_count,
+            ),
+            is_final_review_stage_index(
+                stage_index,
+                improvement_count=improvement_count,
+                review_count=review_count,
+            ),
+        )
+    )
+
+
+def stage_should_start_clean(*, stage_index: int, improvement_count: int, review_count: int) -> bool:
+    return not is_follow_on_review_stage_index(
+        stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    )
+
+
+def terminal_phase_label(
+    *,
+    mode: str,
+    stage_index: int,
+    improvement_count: int,
+    review_count: int,
+) -> str:
+    position = cycle_stage_position(
+        stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    )
+    if position == 1:
+        return "Refactor Planning" if mode == "refactor" else "ExecPlan Planning"
+    if position <= final_planning_stage_position(improvement_count=improvement_count):
+        return f"Improvement Pass {position - 1}/{improvement_count}"
+    if position == implementation_stage_position(improvement_count=improvement_count):
+        return "Implementation"
+    review_index = position - implementation_stage_position(improvement_count=improvement_count)
+    return f"Review Pass {review_index}/{review_count}"
+
+
+def write_terminal_stage_heading(
+    run_logger: RunLogger,
+    *,
+    mode: str,
+    stage: Stage,
+    stage_index: int,
+    total_stages: int,
+    cycles: int,
+    improvement_count: int,
+    review_count: int,
+) -> None:
+    cycle_number = cycle_number_for_stage_index(
+        stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    )
+    phase_label = terminal_phase_label(
+        mode=mode,
+        stage_index=stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    )
+
+    run_logger.write_line("")
+    if is_cycle_start_stage_index(
+        stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    ):
+        run_logger.write_line(
+            f"========== Workflow Cycle {cycle_number}/{cycles} ==========",
+            to_terminal=True,
+        )
+    run_logger.write_line(f"--- {phase_label} ---", to_terminal=True)
+    run_logger.write_line(f"Stage {stage_index}/{total_stages} · {stage.label}", to_terminal=True)
+    run_logger.write_line("")
 
 
 def pending_execplan_path(run_cwd: Path) -> Path:
@@ -682,8 +862,12 @@ def ensure_auto_commit_workspaces_clean(
         )
 
 
-def stage_should_end_clean(stage: Stage, *, stage_index: int) -> bool:
-    return stage_index == 1 or stage.skill_name in {"implement-execplan", *REVIEW_SKILL_CHOICES}
+def stage_should_end_clean(*, stage_index: int, improvement_count: int, review_count: int) -> bool:
+    return stage_should_checkpoint(
+        stage_index=stage_index,
+        improvement_count=improvement_count,
+        review_count=review_count,
+    )
 
 
 def read_execplan_snapshot(path: Path) -> ExecPlanSnapshot | None:
@@ -828,9 +1012,24 @@ def run(
                 cycle_start_execplan_snapshot = read_execplan_snapshot(pending_execplan_path(run_cwd))
             if thread_id is None:
                 raise AppServerError("failed to start a cycle thread")
-            ensure_auto_commit_workspaces_clean(auto_commits, run_cwd, stage, phase="start")
+            if stage_should_start_clean(
+                stage_index=index,
+                improvement_count=args.improvements,
+                review_count=args.review,
+            ):
+                ensure_auto_commit_workspaces_clean(auto_commits, run_cwd, stage, phase="start")
             if stage.skill_name in {*IMPROVE_SKILL_CHOICES, "implement-execplan"}:
                 ensure_pending_execplan_exists(run_cwd, stage)
+            write_terminal_stage_heading(
+                run_logger,
+                mode=args.mode,
+                stage=stage,
+                stage_index=index,
+                total_stages=len(stages),
+                cycles=args.cycles,
+                improvement_count=args.improvements,
+                review_count=args.review,
+            )
             run_logger.write_line(f"=== Stage {index}/{len(stages)}: {stage.label} ===")
             result = client.run_turn(thread_id, stage)
             if result.token_usage is not None:
@@ -862,8 +1061,19 @@ def run(
                 )
             if stage.skill_name == "implement-execplan":
                 ensure_pending_execplan_consumed(run_cwd, stage)
-            maybe_commit_for_stages(auto_commits, run_logger, stage, stage_index=index)
-            if stage_should_end_clean(stage, stage_index=index):
+            maybe_commit_for_stages(
+                auto_commits,
+                run_logger,
+                stage,
+                stage_index=index,
+                improvement_count=args.improvements,
+                review_count=args.review,
+            )
+            if stage_should_end_clean(
+                stage_index=index,
+                improvement_count=args.improvements,
+                review_count=args.review,
+            ):
                 ensure_auto_commit_workspaces_clean(auto_commits, run_cwd, stage, phase="end")
             maybe_delay_between_cycles(
                 stage_index=index,

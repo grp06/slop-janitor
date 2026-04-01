@@ -201,10 +201,10 @@ This split is deliberate. The terminal stays readable while the log remains comp
 ## Reliability Contract
 
 - `slop-janitor` requires a clean starting state in the primary repo and every linked repo it auto-manages. If any of them have pre-existing changes, it exits before stage 1 and tells you to commit, stash, or discard them first.
-- Model and sandbox settings are inherited from your current Codex config. In v1, `slop-janitor` only overrides `cwd` and `approvalPolicy`.
+- Model settings are inherited from your current Codex config. `slop-janitor` overrides the thread `cwd`, forces `approvalPolicy: "never"`, and requests `workspace-write` sandboxing so planning and implementation stages can persist repo-local artifacts.
 - The thread uses `approvalPolicy: "never"`.
 - Auto-managed repos that start clean are required to stay clean at stage boundaries, except for the pending ExecPlan artifact in the primary repo while plan-improvement or implementation is in progress.
-- Successful `review-recent-work` and `review-recent-work-subagents` turns are checkpointed the same way as `implement-execplan` turns when they leave code changes behind, so the next cycle does not plan against ambient uncommitted fixes.
+- Auto-managed repos are checkpointed after the final planning pass in a cycle, after `implement-execplan`, and after the final review pass in a cycle when those stages leave code changes behind.
 - If the server asks for approvals, user input, permissions, MCP elicitation, or ChatGPT token refresh, `slop-janitor` responds deterministically, marks the stage failed, and exits after the matching `turn/completed`.
 - Successful turns require real token data from `thread/tokenUsage/updated`. If a turn completes successfully without token usage, the run fails instead of printing invented zeros.
 - Skill paths are validated before the app-server starts, so broken local setup fails early.

@@ -91,7 +91,7 @@ class AppServerClient:
     def start_thread(self, cwd: str) -> str:
         result = self._request(
             "thread/start",
-            {"cwd": cwd, "approvalPolicy": "never"},
+            {"cwd": cwd, "approvalPolicy": "never", "sandbox": "workspace-write"},
         )
         thread = result.get("thread")
         if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):

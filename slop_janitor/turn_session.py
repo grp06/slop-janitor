@@ -82,6 +82,12 @@ class TurnSession:
                 return None
             item = params.get("item", {})
             self._register_agent_item(item)
+            if item.get("type") == "agentMessage":
+                phase = item.get("phase")
+                if isinstance(phase, str) and phase:
+                    self.run_logger.write_line("", to_terminal=True)
+                    self.run_logger.write_line(f"[{phase.title()}]", to_terminal=True)
+                    self.run_logger.write_line("", to_terminal=True)
             self.run_logger.write_line(f"[started] {self._describe_item(item)}")
             return None
         if method == "item/completed":
