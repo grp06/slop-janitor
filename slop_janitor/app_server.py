@@ -52,6 +52,15 @@ class AppServerClient:
             " ".join(self.spawn_spec.argv),
             self.spawn_spec.cwd,
         )
+        command = " ".join(self.spawn_spec.argv)
+        self.run_logger.write_line("", to_terminal=True)
+        self.run_logger.write_line("Starting Codex app-server...", to_terminal=True)
+        self.run_logger.write_line(
+            "This can take a bit on the first run while Cargo compiles the Codex workspace.",
+            to_terminal=True,
+        )
+        self.run_logger.write_line(f"Launch command: {command}", to_terminal=True)
+        self.run_logger.write_line("")
         try:
             self._process = subprocess.Popen(
                 self.spawn_spec.argv,
@@ -64,7 +73,6 @@ class AppServerClient:
                 bufsize=1,
             )
         except OSError as exc:
-            command = " ".join(self.spawn_spec.argv)
             raise AppServerError(
                 f"failed to spawn `{command}` in {self.spawn_spec.cwd}: {exc}"
             ) from exc

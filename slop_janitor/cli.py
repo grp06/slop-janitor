@@ -992,6 +992,8 @@ def run(
         client.start()
         client.initialize()
         account_info = client.get_account()
+        run_logger.write_line("Codex app-server ready.", to_terminal=True)
+        run_logger.write_line("", to_terminal=True)
         if account_info.get("requiresOpenaiAuth") and account_info.get("account") is None:
             run_logger.write_line(
                 "OpenAI auth is required before starting the pipeline. Run `./slop-janitor auth login`.",
