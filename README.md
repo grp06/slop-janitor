@@ -120,6 +120,20 @@ cd /path/to/target-repo
 /path/to/slop-janitor/slop-janitor --mode refactor --improvements 5 --improve-skill execplan-improve --review 5 --review-skill review-recent-work
 ```
 
+Make sibling repos writable and auto-managed explicitly when one run needs to touch both:
+
+```bash
+cd /path/to/openclaw-cloud
+/path/to/slop-janitor/slop-janitor --mode refactor --linked-repo /path/to/openclaw-studio-private
+```
+
+If you really want Codex to run without filesystem sandboxing, opt in explicitly:
+
+```bash
+cd /path/to/target-repo
+/path/to/slop-janitor/slop-janitor --prompt "help me build a CRM" --sandbox danger-full-access
+```
+
 `slop-janitor` always targets the directory you launch it from, not the `slop-janitor` repository.
 
 ## Modes And Counts
@@ -138,6 +152,10 @@ cd /path/to/target-repo
 
 `--review-skill` selects the review skill for each review pass. Choices are `review-recent-work-subagents` and `review-recent-work`.
 
+`--linked-repo /abs/path` adds another git repo to the managed run scope. Repeat it for more repos. These repos are checked for cleanliness, included in checkpoint commits, and added to the writable sandbox roots.
+
+`--sandbox` controls the Codex filesystem sandbox. Choices are `workspace-write` and `danger-full-access`. The default is `workspace-write`.
+
 Defaults:
 
 - `--cycles 1`
@@ -145,8 +163,11 @@ Defaults:
 - `--improve-skill execplan-improve-subagents`
 - `--review 5`
 - `--review-skill review-recent-work-subagents`
+- `--sandbox workspace-write`
 
 When `--cycles` is greater than 1, stage labels in the run log are cycle-qualified, for example `cycle-2-execplan-create`.
+
+Prompt path detection is still supported as a convenience for linked repos, but explicit `--linked-repo` flags are the durable interface and avoid punctuation/parsing ambiguity.
 
 ## Codex Workspace Configuration
 
@@ -201,7 +222,8 @@ This split is deliberate. The terminal stays readable while the log remains comp
 ## Reliability Contract
 
 - `slop-janitor` requires a clean starting state in the primary repo and every linked repo it auto-manages. If any of them have pre-existing changes, it exits before stage 1 and tells you to commit, stash, or discard them first.
-- Model settings are inherited from your current Codex config. `slop-janitor` overrides the thread `cwd`, forces `approvalPolicy: "never"`, and requests `workspace-write` sandboxing so planning and implementation stages can persist repo-local artifacts.
+- Model settings are inherited from your current Codex config. `slop-janitor` overrides the thread `cwd`, forces `approvalPolicy: "never"`, and applies the selected sandbox mode for the whole run.
+- In the default `workspace-write` sandbox, `slop-janitor` makes every managed repo root writable, not just the launch directory. The run log records the exact writable roots before stage 1.
 - The thread uses `approvalPolicy: "never"`.
 - Auto-managed repos that start clean are required to stay clean at stage boundaries, except for the pending ExecPlan artifact in the primary repo while plan-improvement or implementation is in progress.
 - Auto-managed repos are checkpointed after the final planning pass in a cycle, after `implement-execplan`, and after the final review pass in a cycle when those stages leave code changes behind.

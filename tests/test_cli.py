@@ -628,6 +628,101 @@ class CliTests(unittest.TestCase):
         finally:
             run_logger.close()
 
+    def test_explicit_linked_repo_path_must_exist(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        workspace_root = Path(tempdir.name)
+        cloud_root = workspace_root / "openclaw-cloud"
+        cloud_root.mkdir()
+        self.init_git_repo(cloud_root)
+        missing_root = workspace_root / "missing-repo"
+        run_logger = RunLogger(cloud_root / "run.log", run_cwd=cloud_root, mode="refactor", prompt=PROMPT)
+        try:
+            with self.assertRaisesRegex(AppServerError, "linked repo path does not exist"):
+                prepare_auto_commit_states(
+                    cloud_root,
+                    PROMPT,
+                    run_logger,
+                    linked_repo_paths=[str(missing_root)],
+                )
+        finally:
+            run_logger.close()
+
+    def test_explicit_linked_repo_path_must_be_git_repo(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        workspace_root = Path(tempdir.name)
+        cloud_root = workspace_root / "openclaw-cloud"
+        linked_root = workspace_root / "plain-dir"
+        cloud_root.mkdir()
+        linked_root.mkdir()
+        self.init_git_repo(cloud_root)
+        run_logger = RunLogger(cloud_root / "run.log", run_cwd=cloud_root, mode="refactor", prompt=PROMPT)
+        try:
+            with self.assertRaisesRegex(AppServerError, "linked repo path is not inside a git repository"):
+                prepare_auto_commit_states(
+                    cloud_root,
+                    PROMPT,
+                    run_logger,
+                    linked_repo_paths=[str(linked_root)],
+                )
+        finally:
+            run_logger.close()
+
+    def test_backticked_prompt_repo_paths_are_discovered(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        workspace_root = Path(tempdir.name)
+        cloud_root = workspace_root / "openclaw-cloud"
+        studio_root = workspace_root / "openclaw-studio-private"
+        cloud_root.mkdir()
+        studio_root.mkdir()
+        self.init_git_repo(cloud_root)
+        self.init_git_repo(studio_root)
+        prompt = f"Treat `{cloud_root}` and `{studio_root}` as one project"
+        run_logger = RunLogger(cloud_root / "run.log", run_cwd=cloud_root, mode="refactor", prompt=prompt)
+        try:
+            auto_commits = prepare_auto_commit_states(cloud_root, prompt, run_logger)
+        finally:
+            run_logger.close()
+
+        self.assertEqual(
+            {auto_commit.repo_root.resolve(strict=False) for auto_commit in auto_commits},
+            {
+                cloud_root.resolve(strict=False),
+                studio_root.resolve(strict=False),
+            },
+        )
+
+    def test_explicit_linked_repo_paths_are_managed_without_prompt_parsing(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        workspace_root = Path(tempdir.name)
+        cloud_root = workspace_root / "openclaw-cloud"
+        studio_root = workspace_root / "openclaw-studio-private"
+        cloud_root.mkdir()
+        studio_root.mkdir()
+        self.init_git_repo(cloud_root)
+        self.init_git_repo(studio_root)
+        run_logger = RunLogger(cloud_root / "run.log", run_cwd=cloud_root, mode="refactor", prompt=PROMPT)
+        try:
+            auto_commits = prepare_auto_commit_states(
+                cloud_root,
+                PROMPT,
+                run_logger,
+                linked_repo_paths=[str(studio_root)],
+            )
+        finally:
+            run_logger.close()
+
+        self.assertEqual(
+            {auto_commit.repo_root.resolve(strict=False) for auto_commit in auto_commits},
+            {
+                cloud_root.resolve(strict=False),
+                studio_root.resolve(strict=False),
+            },
+        )
+
     def test_auto_commit_pushes_final_checkpoint_to_tracking_remote(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
@@ -1061,6 +1156,67 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(thread_start["params"]["sandbox"], "workspace-write")
+        self.assertEqual(
+            thread_start["params"]["config"]["sandbox_workspace_write"]["writable_roots"],
+            [thread_start["params"]["cwd"]],
+        )
+        self.assertFalse(thread_start["params"]["config"]["sandbox_workspace_write"]["network_access"])
+
+    def test_thread_start_requests_workspace_write_for_explicit_linked_repos(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        workspace_root = Path(tempdir.name)
+        cloud_root = workspace_root / "openclaw-cloud"
+        studio_root = workspace_root / "openclaw-studio-private"
+        cloud_root.mkdir()
+        studio_root.mkdir()
+        self.init_git_repo(cloud_root)
+        self.init_git_repo(studio_root)
+
+        exit_code, _, stderr, record_path = self.run_pipeline(
+            "happy_path",
+            argv=[
+                "--prompt",
+                PROMPT,
+                "--linked-repo",
+                str(studio_root),
+            ],
+            target_cwd=cloud_root,
+        )
+        record = self.read_json(record_path)
+        _, log_text = self.read_run_log(record_path)
+        thread_start = next(
+            message for message in self.inbound_messages(record) if message.get("method") == "thread/start"
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(thread_start["params"]["sandbox"], "workspace-write")
+        self.assertEqual(
+            thread_start["params"]["config"]["sandbox_workspace_write"]["writable_roots"],
+            [str(cloud_root.resolve(strict=False)), str(studio_root.resolve(strict=False))],
+        )
+        self.assertIn(f"managedRepo1={cloud_root.resolve(strict=False)}", log_text)
+        self.assertIn(f"managedRepo2={studio_root.resolve(strict=False)}", log_text)
+        self.assertIn(f"sandboxWritableRoot1={cloud_root.resolve(strict=False)}", log_text)
+        self.assertIn(f"sandboxWritableRoot2={studio_root.resolve(strict=False)}", log_text)
+
+    def test_thread_start_can_request_danger_full_access(self) -> None:
+        exit_code, _, stderr, record_path = self.run_pipeline(
+            "happy_path",
+            argv=["--prompt", PROMPT, "--sandbox", "danger-full-access"],
+        )
+        record = self.read_json(record_path)
+        _, log_text = self.read_run_log(record_path)
+        thread_start = next(
+            message for message in self.inbound_messages(record) if message.get("method") == "thread/start"
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(thread_start["params"]["sandbox"], "danger-full-access")
+        self.assertNotIn("config", thread_start["params"])
+        self.assertIn("sandboxMode=danger-full-access", log_text)
 
     def test_multi_cycle_run_starts_a_fresh_thread_each_cycle(self) -> None:
         exit_code, _, _, record_path = self.run_pipeline(

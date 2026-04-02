@@ -196,8 +196,20 @@ class FakeServer:
         thread_params = thread_start.get("params", {})
         if thread_params.get("approvalPolicy") != "never":
             raise ProtocolError(f"unexpected approvalPolicy: {thread_params}")
-        if thread_params.get("sandbox") != "workspace-write":
+        sandbox_mode = thread_params.get("sandbox")
+        if sandbox_mode not in {"workspace-write", "danger-full-access"}:
             raise ProtocolError(f"unexpected sandbox: {thread_params}")
+        config = thread_params.get("config")
+        if sandbox_mode == "workspace-write":
+            if not isinstance(config, dict):
+                raise ProtocolError(f"workspace-write missing config: {thread_params}")
+            sandbox_workspace_write = config.get("sandbox_workspace_write")
+            if not isinstance(sandbox_workspace_write, dict):
+                raise ProtocolError(f"workspace-write missing sandbox_workspace_write: {thread_params}")
+            if not isinstance(sandbox_workspace_write.get("writable_roots"), list):
+                raise ProtocolError(f"workspace-write missing writable_roots: {thread_params}")
+        elif config is not None:
+            raise ProtocolError(f"unexpected config for sandbox: {thread_params}")
         if not isinstance(thread_params.get("cwd"), str) or not thread_params["cwd"]:
             raise ProtocolError(f"thread/start missing cwd: {thread_params}")
         self.run_cwd = Path(thread_params["cwd"])
@@ -213,7 +225,7 @@ class FakeServer:
                     "cwd": thread_params["cwd"],
                     "approvalPolicy": "never",
                     "approvalsReviewer": {"type": "cli"},
-                    "sandbox": {"mode": "workspace-write"},
+                    "sandbox": {"mode": sandbox_mode},
                     "reasoningEffort": "medium",
                 },
             }

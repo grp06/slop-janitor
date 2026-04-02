@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
@@ -44,6 +45,10 @@ IMPROVE_SKILL_CHOICES = (
 REVIEW_SKILL_CHOICES = (
     "review-recent-work",
     "review-recent-work-subagents",
+)
+SANDBOX_MODE_CHOICES = (
+    "workspace-write",
+    "danger-full-access",
 )
 
 SKILL_PATHS = {
@@ -356,6 +361,13 @@ def build_run_parser() -> argparse.ArgumentParser:
     parser.add_argument("--codex-workspace")
     parser.add_argument("--mode", choices=("pipeline", "refactor"), default="pipeline")
     parser.add_argument("--prompt")
+    parser.add_argument(
+        "--linked-repo",
+        action="append",
+        default=[],
+        help="Additional git repository to manage and make writable during the run. Repeatable.",
+    )
+    parser.add_argument("--sandbox", choices=SANDBOX_MODE_CHOICES, default="workspace-write")
     parser.add_argument("--cycles", type=int, default=1)
     parser.add_argument("--improvements", type=int, default=4)
     parser.add_argument("--improve-skill", choices=IMPROVE_SKILL_CHOICES, default="execplan-improve-subagents")
@@ -463,7 +475,7 @@ def extract_repo_paths_from_prompt(prompt: str | None) -> list[Path]:
     paths: list[Path] = []
     seen: set[Path] = set()
     for match in re.findall(r"(?:~|/)[^\s\"']+", prompt):
-        raw_path = match.rstrip(".,:;!?)]}\"'")
+        raw_path = match.rstrip("`.,:;!?)]}\"'")
         path = Path(raw_path).expanduser()
         if not path.exists() or not path.is_dir():
             continue
@@ -479,25 +491,110 @@ def prepare_auto_commit_state(run_cwd: Path, run_logger: RunLogger) -> AutoCommi
     return build_auto_commit_state(run_cwd, run_logger, label="primary repo")
 
 
-def prepare_auto_commit_states(run_cwd: Path, prompt: str | None, run_logger: RunLogger) -> list[AutoCommitState]:
-    states = [prepare_auto_commit_state(run_cwd, run_logger)]
-    seen_roots = {states[0].repo_root.resolve(strict=False)}
+def resolve_explicit_linked_repo_roots(linked_repo_paths: list[str]) -> list[Path]:
+    repo_roots: list[Path] = []
+    seen: set[Path] = set()
+    for raw_path in linked_repo_paths:
+        candidate = Path(raw_path).expanduser()
+        if not candidate.exists():
+            raise AppServerError(f"linked repo path does not exist: {candidate}")
+        if not candidate.is_dir():
+            raise AppServerError(f"linked repo path is not a directory: {candidate}")
+        repo_root = git_repo_root(candidate)
+        if repo_root is None:
+            raise AppServerError(f"linked repo path is not inside a git repository: {candidate}")
+        resolved_root = repo_root.resolve(strict=False)
+        if resolved_root in seen:
+            continue
+        seen.add(resolved_root)
+        repo_roots.append(repo_root)
+    return repo_roots
+
+
+def resolve_prompt_linked_repo_roots(prompt: str | None) -> list[Path]:
+    repo_roots: list[Path] = []
+    seen: set[Path] = set()
     for candidate in extract_repo_paths_from_prompt(prompt):
         repo_root = git_repo_root(candidate)
         if repo_root is None:
             continue
+        resolved_root = repo_root.resolve(strict=False)
+        if resolved_root in seen:
+            continue
+        seen.add(resolved_root)
+        repo_roots.append(repo_root)
+    return repo_roots
+
+
+def resolve_linked_repo_roots(*, linked_repo_paths: list[str], prompt: str | None) -> list[Path]:
+    repo_roots: list[Path] = []
+    seen: set[Path] = set()
+    for repo_root in [*resolve_explicit_linked_repo_roots(linked_repo_paths), *resolve_prompt_linked_repo_roots(prompt)]:
+        resolved_root = repo_root.resolve(strict=False)
+        if resolved_root in seen:
+            continue
+        seen.add(resolved_root)
+        repo_roots.append(repo_root)
+    return repo_roots
+
+
+def prepare_auto_commit_states(
+    run_cwd: Path,
+    prompt: str | None,
+    run_logger: RunLogger,
+    *,
+    linked_repo_paths: list[str] | None = None,
+) -> list[AutoCommitState]:
+    states = [prepare_auto_commit_state(run_cwd, run_logger)]
+    seen_roots = {states[0].repo_root.resolve(strict=False)}
+    for repo_root in resolve_linked_repo_roots(linked_repo_paths=linked_repo_paths or [], prompt=prompt):
         resolved_root = repo_root.resolve(strict=False)
         if resolved_root in seen_roots:
             continue
         seen_roots.add(resolved_root)
         states.append(
             build_auto_commit_state(
-                candidate,
+                repo_root,
                 run_logger,
                 label=f"linked repo {repo_root}",
             )
         )
     return states
+
+
+def managed_repo_roots(auto_commits: list[AutoCommitState]) -> list[Path]:
+    roots: list[Path] = []
+    seen: set[Path] = set()
+    for auto_commit in auto_commits:
+        resolved_root = auto_commit.repo_root.resolve(strict=False)
+        if resolved_root in seen:
+            continue
+        seen.add(resolved_root)
+        roots.append(auto_commit.repo_root)
+    return roots
+
+
+def sandbox_writable_roots(auto_commits: list[AutoCommitState]) -> list[str]:
+    return [str(root.resolve(strict=False)) for root in managed_repo_roots(auto_commits)]
+
+
+def log_run_scope(
+    run_logger: RunLogger,
+    *,
+    auto_commits: list[AutoCommitState],
+    sandbox_mode: str,
+) -> None:
+    run_logger.write_line(f"sandboxMode={sandbox_mode}")
+    for index, repo_root in enumerate(managed_repo_roots(auto_commits), start=1):
+        run_logger.write_line(f"managedRepo{index}={repo_root.resolve(strict=False)}")
+    if sandbox_mode == "workspace-write":
+        for index, writable_root in enumerate(sandbox_writable_roots(auto_commits), start=1):
+            run_logger.write_line(f"sandboxWritableRoot{index}={writable_root}")
+
+
+def validate_sandbox_scope(*, auto_commits: list[AutoCommitState], sandbox_mode: str) -> None:
+    if sandbox_mode == "workspace-write" and not sandbox_writable_roots(auto_commits):
+        raise AppServerError("workspace-write sandbox requires at least one writable root")
 
 
 def maybe_commit_checkpoint(auto_commit: AutoCommitState, run_logger: RunLogger, message: str) -> None:
@@ -959,6 +1056,7 @@ def run(
         run_logger.write_line(f"improveSkill={args.improve_skill}")
         run_logger.write_line(f"review={args.review}")
         run_logger.write_line(f"reviewSkill={args.review_skill}")
+        run_logger.write_line(f"linkedRepos={json.dumps(args.linked_repo)}")
         run_logger.write_line(f"delayBetweenCyclesMinutes={args.delay_between_cycles_minutes}")
         run_logger.write_line("")
         validate_counts(
@@ -986,7 +1084,15 @@ def run(
         else:
             client_spawn_spec = spawn_spec
 
-        auto_commits = prepare_auto_commit_states(run_cwd, args.prompt, run_logger)
+        auto_commits = prepare_auto_commit_states(
+            run_cwd,
+            args.prompt,
+            run_logger,
+            linked_repo_paths=args.linked_repo,
+        )
+        validate_sandbox_scope(auto_commits=auto_commits, sandbox_mode=args.sandbox)
+        log_run_scope(run_logger, auto_commits=auto_commits, sandbox_mode=args.sandbox)
+        run_logger.write_line("")
 
         client = AppServerClient(client_spawn_spec, run_logger)
         client.start()
@@ -1010,7 +1116,11 @@ def run(
                 improvement_count=args.improvements,
                 review_count=args.review,
             ):
-                thread_id = client.start_thread(str(run_cwd))
+                thread_id = client.start_thread(
+                    str(run_cwd),
+                    sandbox_mode=args.sandbox,
+                    writable_roots=sandbox_writable_roots(auto_commits),
+                )
                 cycle_start_execplan_snapshot = read_execplan_snapshot(pending_execplan_path(run_cwd))
             if thread_id is None:
                 raise AppServerError("failed to start a cycle thread")

@@ -96,10 +96,24 @@ class AppServerClient:
     def get_account(self) -> dict[str, Any]:
         return self._request("account/read", {"refreshToken": False})
 
-    def start_thread(self, cwd: str) -> str:
+    def start_thread(self, cwd: str, *, sandbox_mode: str, writable_roots: list[str]) -> str:
+        params: dict[str, Any] = {
+            "cwd": cwd,
+            "approvalPolicy": "never",
+            "sandbox": sandbox_mode,
+        }
+        if sandbox_mode == "workspace-write":
+            params["config"] = {
+                "sandbox_workspace_write": {
+                    "writable_roots": writable_roots,
+                    "network_access": False,
+                    "exclude_tmpdir_env_var": False,
+                    "exclude_slash_tmp": False,
+                }
+            }
         result = self._request(
             "thread/start",
-            {"cwd": cwd, "approvalPolicy": "never", "sandbox": "workspace-write"},
+            params,
         )
         thread = result.get("thread")
         if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
