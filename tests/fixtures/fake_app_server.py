@@ -47,35 +47,6 @@ def build_follow_up_stages(
     ]
 
 
-def build_expected_stages(
-    prompt: str,
-    *,
-    cycles: int,
-    improvement_count: int,
-    review_count: int,
-    improve_skill_name: str,
-    review_skill_name: str,
-) -> list[dict[str, str]]:
-    stages: list[dict[str, str]] = []
-    for _ in range(cycles):
-        stages.append(
-            {
-                "skill_name": "execplan-create",
-                "skill_path": f"{SKILLS_ROOT}/execplan-create/SKILL.md",
-                "text": f"$execplan-create {prompt}",
-            }
-        )
-        stages.extend(
-            build_follow_up_stages(
-                improvement_count=improvement_count,
-                review_count=review_count,
-                improve_skill_name=improve_skill_name,
-                review_skill_name=review_skill_name,
-            )
-        )
-    return stages
-
-
 def build_expected_refactor_stages(
     prompt: str | None,
     *,
@@ -118,8 +89,8 @@ def build_expected_refactor_stages(
     return stages
 
 
-def planning_stage_count(mode: str) -> int:
-    return 3 if mode == "refactor" else 1
+def planning_stage_count() -> int:
+    return 3
 
 
 class ProtocolError(RuntimeError):
@@ -140,7 +111,6 @@ class FakeServer:
         self.run_cwd: Path | None = None
         config_path = Path(sys.argv[3]) if len(sys.argv) == 4 else None
         self.config = {
-            "mode": "pipeline",
             "prompt": PROMPT,
             "cycles": 1,
             "improvements": 1,
@@ -150,24 +120,14 @@ class FakeServer:
         }
         if config_path is not None:
             self.config.update(json.loads(config_path.read_text(encoding="utf-8")))
-        if self.config["mode"] == "refactor":
-            self.expected_stages = build_expected_refactor_stages(
-                self.config.get("prompt"),
-                cycles=int(self.config["cycles"]),
-                improvement_count=int(self.config["improvements"]),
-                review_count=int(self.config["review"]),
-                improve_skill_name=str(self.config["improve_skill"]),
-                review_skill_name=str(self.config["review_skill"]),
-            )
-        else:
-            self.expected_stages = build_expected_stages(
-                str(self.config["prompt"]),
-                cycles=int(self.config["cycles"]),
-                improvement_count=int(self.config["improvements"]),
-                review_count=int(self.config["review"]),
-                improve_skill_name=str(self.config["improve_skill"]),
-                review_skill_name=str(self.config["review_skill"]),
-            )
+        self.expected_stages = build_expected_refactor_stages(
+            self.config.get("prompt"),
+            cycles=int(self.config["cycles"]),
+            improvement_count=int(self.config["improvements"]),
+            review_count=int(self.config["review"]),
+            improve_skill_name=str(self.config["improve_skill"]),
+            review_skill_name=str(self.config["review_skill"]),
+        )
         self.error: str | None = None
 
     def active_link_path(self) -> Path:
@@ -442,7 +402,7 @@ class FakeServer:
                     "questions": [],
                 },
                 expect_result={"answers": {}},
-                failure_message="interactive tool input is unsupported in this pipeline",
+                failure_message="interactive tool input is unsupported in this workflow",
             )
             return
         if self.scenario == "mcp_elicitation":
@@ -460,7 +420,7 @@ class FakeServer:
                     },
                 },
                 expect_result={"action": "decline", "content": None, "_meta": None},
-                failure_message="MCP elicitation is unsupported in this pipeline",
+                failure_message="MCP elicitation is unsupported in this workflow",
             )
             return
         if self.scenario == "permissions_request":
@@ -474,7 +434,7 @@ class FakeServer:
                     "reason": "Need permissions",
                 },
                 expect_result={"permissions": {}, "scope": "turn"},
-                failure_message="permission approval is unsupported in this pipeline",
+                failure_message="permission approval is unsupported in this workflow",
             )
             return
         if self.scenario == "chatgpt_auth_refresh":
@@ -482,7 +442,7 @@ class FakeServer:
                 "account/chatgptAuthTokens/refresh",
                 {"reason": "unauthorized", "previousAccountId": None},
                 expect_error="external auth refresh is unsupported in slop-janitor",
-                failure_message="external auth refresh is unsupported in this pipeline",
+                failure_message="external auth refresh is unsupported in this workflow",
             )
             return
         if self.scenario == "approval_request":
@@ -824,7 +784,7 @@ class FakeServer:
         self.complete_turn(turn_id)
 
     def run_happy_path(self, *, start_stage_index: int = 0) -> None:
-        cycle_length = planning_stage_count(str(self.config["mode"])) + int(self.config["improvements"]) + int(self.config["review"]) + 1
+        cycle_length = planning_stage_count() + int(self.config["improvements"]) + int(self.config["review"]) + 1
         for stage_index in range(start_stage_index, len(self.expected_stages)):
             if stage_index > start_stage_index and stage_index % cycle_length == 0:
                 self.handle_thread_start()
@@ -878,7 +838,7 @@ class FakeServer:
         self.run_happy_path()
 
     def run_retryable_impl_ambiguity(self) -> None:
-        implementation_stage_index = planning_stage_count(str(self.config["mode"])) + int(self.config["improvements"])
+        implementation_stage_index = planning_stage_count() + int(self.config["improvements"])
         for stage_index in range(implementation_stage_index):
             turn_start = self.expect_request("turn/start")
             _, turn_id = self.validate_turn_start(turn_start, stage_index)
@@ -939,7 +899,7 @@ class FakeServer:
         )
 
     def run_retryable_impl_postcondition_success(self) -> None:
-        implementation_stage_index = planning_stage_count(str(self.config["mode"])) + int(self.config["improvements"])
+        implementation_stage_index = planning_stage_count() + int(self.config["improvements"])
         for stage_index in range(implementation_stage_index):
             turn_start = self.expect_request("turn/start")
             _, turn_id = self.validate_turn_start(turn_start, stage_index)
@@ -973,7 +933,7 @@ class FakeServer:
         self.run_happy_path(start_stage_index=implementation_stage_index + 1)
 
     def run_retryable_impl_postcondition_missing_tokens(self) -> None:
-        implementation_stage_index = planning_stage_count(str(self.config["mode"])) + int(self.config["improvements"])
+        implementation_stage_index = planning_stage_count() + int(self.config["improvements"])
         for stage_index in range(implementation_stage_index):
             turn_start = self.expect_request("turn/start")
             _, turn_id = self.validate_turn_start(turn_start, stage_index)

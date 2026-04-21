@@ -25,16 +25,6 @@ It also writes a complete run log, so the session is inspectable after the fact 
 
 By default, one cycle is:
 
-1. `execplan-create`
-2. `execplan-improve`
-3. `implement-execplan`
-4. `review-recent-work`
-
-You can change the number of full cycles, improvement passes, and review passes.
-You can also swap the follow-up skills with `--improve-skill` and `--review-skill`.
-
-In `--mode refactor`, the cycle grows a three-stage front end:
-
 1. `find-refactor-candidates`
 2. `select-refactor`
 3. `execplan-create`
@@ -42,13 +32,16 @@ In `--mode refactor`, the cycle grows a three-stage front end:
 5. `implement-execplan`
 6. `review-recent-work`
 
+You can change the number of full cycles, improvement passes, and review passes.
+You can also swap the follow-up skills with `--improve-skill` and `--review-skill`.
+
 ## Bundled Skills
 
 The loop is built from a small set of repo-local skills in `.agents/skills`:
 
 - `find-refactor-candidates`: searches the repo from first principles and writes a candidate shortlist into a work item.
 - `select-refactor`: pressure-tests that shortlist and locks the winning refactor before planning starts.
-- `execplan-create`: turns either a locked refactor decision or a raw prompt into an ExecPlan.
+- `execplan-create`: turns a locked refactor decision into an ExecPlan.
 - `execplan-improve`: rewrites that plan with code-grounded corrections and missing details.
 - `implement-execplan`: executes the active work-item ExecPlan while updating work-item state.
 - `review-recent-work`: reviews the most recently implemented ExecPlan work and fixes obvious issues immediately.
@@ -95,62 +88,53 @@ The auth wrapper keeps stdin, stdout, and stderr attached to the terminal, so it
 
 ## Basic Use
 
-The most natural use is refactor mode. Run it from the repository you want to improve:
+Run it from the repository you want to improve:
 
 ```bash
 cd /path/to/target-repo
-/path/to/slop-janitor/slop-janitor --mode refactor
+/path/to/slop-janitor/slop-janitor
 ```
 
 Add guidance if you want to steer the refactor:
 
 ```bash
 cd /path/to/target-repo
-/path/to/slop-janitor/slop-janitor --mode refactor --prompt "focus on testability and simplifying boundaries"
-```
-
-Run the default planning-first workflow if you want to start from an open-ended implementation prompt instead:
-
-```bash
-cd /path/to/target-repo
-/path/to/slop-janitor/slop-janitor --prompt "help me build a CRM"
+/path/to/slop-janitor/slop-janitor --prompt "focus on testability and simplifying boundaries"
 ```
 
 Increase the amount of iteration:
 
 ```bash
 cd /path/to/target-repo
-/path/to/slop-janitor/slop-janitor --prompt "help me build a CRM" --cycles 2 --improvements 5 --review 3
+/path/to/slop-janitor/slop-janitor --prompt "focus on testability and simplifying boundaries" --cycles 2 --improvements 5 --review 3
 ```
 
 Use the subagent follow-up skills instead:
 
 ```bash
 cd /path/to/target-repo
-/path/to/slop-janitor/slop-janitor --mode refactor --improvements 3 --improve-skill execplan-improve-subagents --review 2 --review-skill review-recent-work-subagents
+/path/to/slop-janitor/slop-janitor --improvements 3 --improve-skill execplan-improve-subagents --review 2 --review-skill review-recent-work-subagents
 ```
 
 Make sibling repos writable and auto-managed explicitly when one run needs to touch both:
 
 ```bash
 cd /path/to/openclaw-cloud
-/path/to/slop-janitor/slop-janitor --mode refactor --linked-repo /path/to/openclaw-studio-private
+/path/to/slop-janitor/slop-janitor --linked-repo /path/to/openclaw-studio-private
 ```
 
 If you really want Codex to run without filesystem sandboxing, opt in explicitly:
 
 ```bash
 cd /path/to/target-repo
-/path/to/slop-janitor/slop-janitor --prompt "help me build a CRM" --sandbox danger-full-access
+/path/to/slop-janitor/slop-janitor --prompt "focus on testability and simplifying boundaries" --sandbox danger-full-access
 ```
 
 `slop-janitor` always targets the directory you launch it from, not the `slop-janitor` repository.
 
-## Modes And Counts
+## Counts And Options
 
-`--mode pipeline` is the default. It requires `--prompt` and starts with `execplan-create`. In pipeline mode, `execplan-create` now prefers the work-item format under `.agent/work/<id-slug>/` and the follow-up skills keep operating on that active work item.
-
-`--mode refactor` prepends three planning stages before the follow-up loop: `find-refactor-candidates`, `select-refactor`, and `execplan-create`. `--prompt` is optional in refactor mode. If you omit it, stage 1 asks for materially different refactor candidates in the current repository.
+`--prompt` is optional. If you omit it, stage 1 asks for materially different refactor candidates in the current repository.
 
 `--cycles` controls how many times the full loop runs.
 
@@ -201,7 +185,7 @@ If neither is set, the command fails with a clear setup error.
 Examples:
 
 ```bash
-./slop-janitor --codex-workspace /path/to/codex/codex-rs --prompt "help me build a CRM"
+./slop-janitor --codex-workspace /path/to/codex/codex-rs --prompt "focus on testability and simplifying boundaries"
 ./slop-janitor auth --codex-workspace /path/to/codex/codex-rs login
 ```
 

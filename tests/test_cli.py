@@ -116,7 +116,7 @@ class CliTests(unittest.TestCase):
             cwd=str(cwd or REPO_ROOT),
         )
 
-    def run_pipeline(
+    def run_workflow(
         self,
         scenario: str,
         *,
@@ -133,8 +133,7 @@ class CliTests(unittest.TestCase):
         default_target_cwd.mkdir()
         stdout = io.StringIO()
         stderr = io.StringIO()
-        cli_argv = argv or ["--prompt", PROMPT]
-        mode = "pipeline"
+        cli_argv = argv or []
         prompt: str | None = PROMPT
         cycles = 1
         improvements = 1
@@ -144,10 +143,6 @@ class CliTests(unittest.TestCase):
         index = 0
         while index < len(cli_argv):
             token = cli_argv[index]
-            if token == "--mode":
-                mode = cli_argv[index + 1]
-                index += 2
-                continue
             if token == "--prompt":
                 prompt = cli_argv[index + 1]
                 index += 2
@@ -173,12 +168,11 @@ class CliTests(unittest.TestCase):
                 index += 2
                 continue
             index += 1
-        if mode == "refactor" and "--prompt" not in cli_argv:
+        if "--prompt" not in cli_argv:
             prompt = None
         config_path.write_text(
             json.dumps(
                 {
-                    "mode": mode,
                     "prompt": prompt,
                     "cycles": cycles,
                     "improvements": improvements,
@@ -202,6 +196,21 @@ class CliTests(unittest.TestCase):
                     runs_dir=runs_dir,
                 )
         return exit_code, stdout.getvalue(), stderr.getvalue(), record_path
+
+    def run_pipeline(
+        self,
+        scenario: str,
+        *,
+        argv: list[str] | None = None,
+        target_cwd: Path | None = None,
+        server_cwd: Path | None = None,
+    ) -> tuple[int, str, str, Path]:
+        return self.run_workflow(
+            scenario,
+            argv=argv,
+            target_cwd=target_cwd,
+            server_cwd=server_cwd,
+        )
 
     def run_auth_command(self, argv: list[str]) -> tuple[int, str, Path]:
         tempdir = tempfile.TemporaryDirectory()
@@ -271,7 +280,7 @@ class CliTests(unittest.TestCase):
     def test_missing_openai_auth_fails_with_auth_hint(self) -> None:
         target_dir = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(target_dir, ignore_errors=True))
-        exit_code, _, stderr, record_path = self.run_pipeline("missing_auth", target_cwd=target_dir)
+        exit_code, _, stderr, record_path = self.run_workflow("missing_auth", target_cwd=target_dir)
         record = self.read_json(record_path)
         methods = [message["method"] for message in self.inbound_messages(record) if "method" in message]
 
@@ -279,13 +288,19 @@ class CliTests(unittest.TestCase):
         self.assertIn("slop-janitor auth login", stderr)
         self.assertNotIn("thread/start", methods)
 
-    def test_pipeline_mode_requires_prompt(self) -> None:
-        stderr = io.StringIO()
-        with contextlib.redirect_stderr(stderr):
-            exit_code = run([])
+    def test_default_workflow_uses_refactor_candidate_prompt_when_missing(self) -> None:
+        exit_code, _, stderr, record_path = self.run_workflow("refactor_without_prompt", argv=[])
+        record = self.read_json(record_path)
+        turn_start = next(
+            message for message in self.inbound_messages(record) if message.get("method") == "turn/start"
+        )
 
-        self.assertEqual(exit_code, 1)
-        self.assertIn("`--prompt` is required when `--mode pipeline` is selected", stderr.getvalue())
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(
+            turn_start["params"]["input"][0]["text"],
+            f"$find-refactor-candidates {DEFAULT_REFACTOR_PROMPT}",
+        )
 
     def test_invalid_cycles_fails(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
@@ -392,7 +407,6 @@ class CliTests(unittest.TestCase):
                 auto_commit,
                 run_logger,
                 mock.Mock(label="find-refactor-candidates", skill_name="find-refactor-candidates"),
-                mode="refactor",
                 stage_index=1,
                 improvement_count=1,
                 review_count=1,
@@ -412,7 +426,6 @@ class CliTests(unittest.TestCase):
                 auto_commit,
                 run_logger,
                 mock.Mock(label="execplan-improve-subagents-1", skill_name="execplan-improve-subagents"),
-                mode="refactor",
                 stage_index=4,
                 improvement_count=1,
                 review_count=1,
@@ -423,7 +436,6 @@ class CliTests(unittest.TestCase):
                 auto_commit,
                 run_logger,
                 mock.Mock(label="implement-execplan", skill_name="implement-execplan"),
-                mode="refactor",
                 stage_index=5,
                 improvement_count=1,
                 review_count=1,
@@ -437,7 +449,6 @@ class CliTests(unittest.TestCase):
                     label="review-recent-work-subagents-1",
                     skill_name="review-recent-work-subagents",
                 ),
-                mode="refactor",
                 stage_index=6,
                 improvement_count=1,
                 review_count=1,
@@ -484,7 +495,6 @@ class CliTests(unittest.TestCase):
                     label="cycle-1-review-recent-work-subagents-1",
                     skill_name="review-recent-work-subagents",
                 ),
-                mode="refactor",
                 stage_index=5,
                 improvement_count=0,
                 review_count=2,
@@ -522,7 +532,6 @@ class CliTests(unittest.TestCase):
                     label="cycle-1-review-recent-work-subagents-2",
                     skill_name="review-recent-work-subagents",
                 ),
-                mode="refactor",
                 stage_index=6,
                 improvement_count=0,
                 review_count=2,
@@ -563,7 +572,6 @@ class CliTests(unittest.TestCase):
                     label="cycle-1-review-recent-work-2",
                     skill_name="review-recent-work",
                 ),
-                mode="refactor",
                 stage_index=6,
                 improvement_count=0,
                 review_count=2,
@@ -592,7 +600,7 @@ class CliTests(unittest.TestCase):
         repo_root = Path(tempdir.name)
         self.init_git_repo(repo_root)
         (repo_root / "README.md").write_text("dirty\n", encoding="utf-8")
-        run_logger = RunLogger(repo_root / "run.log", run_cwd=repo_root, mode="pipeline", prompt=PROMPT)
+        run_logger = RunLogger(repo_root / "run.log", run_cwd=repo_root, mode="refactor", prompt=PROMPT)
         with self.assertRaisesRegex(
             AppServerError,
             "refusing to start: primary repo .* has pre-existing changes",
@@ -732,7 +740,7 @@ class CliTests(unittest.TestCase):
         repo_root = Path(tempdir.name)
         self.init_git_repo(repo_root)
         remote_root = self.init_git_remote(repo_root)
-        run_logger = RunLogger(repo_root / "run.log", run_cwd=repo_root, mode="pipeline", prompt=PROMPT)
+        run_logger = RunLogger(repo_root / "run.log", run_cwd=repo_root, mode="refactor", prompt=PROMPT)
         try:
             auto_commit = prepare_auto_commit_state(repo_root, run_logger)
             self.assertTrue(auto_commit.enabled)
@@ -743,7 +751,6 @@ class CliTests(unittest.TestCase):
                 auto_commit,
                 run_logger,
                 mock.Mock(label="execplan-create", skill_name="execplan-create"),
-                mode="pipeline",
                 stage_index=1,
                 improvement_count=0,
                 review_count=0,
@@ -823,7 +830,6 @@ class CliTests(unittest.TestCase):
                 auto_commits,
                 run_logger,
                 mock.Mock(label="execplan-create", skill_name="execplan-create"),
-                mode="refactor",
                 stage_index=3,
                 improvement_count=0,
                 review_count=0,
@@ -835,7 +841,6 @@ class CliTests(unittest.TestCase):
                 auto_commits,
                 run_logger,
                 mock.Mock(label="implement-execplan", skill_name="implement-execplan"),
-                mode="refactor",
                 stage_index=8,
                 improvement_count=4,
                 review_count=0,
@@ -883,8 +888,6 @@ class CliTests(unittest.TestCase):
         exit_code, _, stderr, _ = self.run_pipeline(
             "review_mutates_linked_repo",
             argv=[
-                "--mode",
-                "refactor",
                 "--prompt",
                 prompt,
                 "--cycles",
@@ -924,8 +927,6 @@ class CliTests(unittest.TestCase):
         exit_code, _, stderr, _ = self.run_pipeline(
             "review_mutates_linked_repo",
             argv=[
-                "--mode",
-                "refactor",
                 "--prompt",
                 prompt,
                 "--cycles",
@@ -952,10 +953,10 @@ class CliTests(unittest.TestCase):
         self.assertIn("slop-janitor: after cycle-1-review-recent-work-1", history)
         self.assertIn("slop-janitor: after cycle-2-review-recent-work-1", history)
 
-    def test_refactor_mode_runs_candidate_selection_flow_with_prompt(self) -> None:
+    def test_default_workflow_runs_candidate_selection_flow_with_prompt(self) -> None:
         exit_code, stdout, stderr, record_path = self.run_pipeline(
             "refactor_with_prompt",
-            argv=["--mode", "refactor", "--prompt", PROMPT],
+            argv=["--prompt", PROMPT],
         )
         record = self.read_json(record_path)
         _, log_text = self.read_run_log(record_path)
@@ -986,12 +987,10 @@ class CliTests(unittest.TestCase):
             "$execplan-improve improve the active work-item ExecPlan and rewrite it in place",
         )
 
-    def test_refactor_mode_allows_selecting_non_subagent_follow_up_skills(self) -> None:
+    def test_default_workflow_allows_selecting_non_subagent_follow_up_skills(self) -> None:
         exit_code, _, stderr, record_path = self.run_pipeline(
             "refactor_with_prompt",
             argv=[
-                "--mode",
-                "refactor",
                 "--prompt",
                 PROMPT,
                 "--improve-skill",
@@ -1023,10 +1022,10 @@ class CliTests(unittest.TestCase):
             "$review-recent-work review the most recently implemented work-item ExecPlan",
         )
 
-    def test_refactor_mode_allows_missing_prompt(self) -> None:
+    def test_default_workflow_allows_missing_prompt(self) -> None:
         exit_code, stdout, stderr, record_path = self.run_pipeline(
             "refactor_without_prompt",
-            argv=["--mode", "refactor"],
+            argv=[],
         )
         record = self.read_json(record_path)
         _, log_text = self.read_run_log(record_path)
@@ -1065,25 +1064,29 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
-        self.assertEqual(len(turn_starts), 10)
+        self.assertEqual(len(turn_starts), 14)
         self.assertIn("========== Workflow Cycle 1/2 ==========", stdout)
         self.assertIn("========== Workflow Cycle 2/2 ==========", stdout)
         self.assertIn("--- Improvement Pass 1/2 ---", stdout)
         self.assertIn("--- Review Pass 1/1 ---", stdout)
-        self.assertIn("=== Stage 1/10: cycle-1-execplan-create ===", log_text)
-        self.assertIn("=== Stage 10/10: cycle-2-review-recent-work-1 ===", log_text)
-        self.assertEqual(turn_starts[0]["params"]["input"][0]["text"], f"$execplan-create {PROMPT}")
+        self.assertIn("=== Stage 1/14: cycle-1-find-refactor-candidates ===", log_text)
+        self.assertIn("=== Stage 14/14: cycle-2-review-recent-work-1 ===", log_text)
+        self.assertEqual(turn_starts[0]["params"]["input"][0]["text"], f"$find-refactor-candidates {PROMPT}")
         self.assertEqual(
             turn_starts[1]["params"]["input"][0]["text"],
+            "$select-refactor pressure-test the active shortlist, lock the best refactor decision, and stop before planning.",
+        )
+        self.assertEqual(
+            turn_starts[3]["params"]["input"][0]["text"],
             "$execplan-improve improve the active work-item ExecPlan and rewrite it in place",
         )
         self.assertEqual(
-            turn_starts[4]["params"]["input"][0]["text"],
+            turn_starts[6]["params"]["input"][0]["text"],
             "$review-recent-work review the most recently implemented work-item ExecPlan",
         )
         self.assertEqual(
-            turn_starts[5]["params"]["input"][0]["text"],
-            f"$execplan-create {PROMPT}",
+            turn_starts[7]["params"]["input"][0]["text"],
+            f"$find-refactor-candidates {PROMPT}",
         )
 
     def test_delay_between_cycles_sleeps_once_per_completed_cycle_boundary(self) -> None:
@@ -1126,7 +1129,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("This can take a bit on the first run while Cargo compiles the Codex workspace.", stdout)
         self.assertIn("Codex app-server ready.", stdout)
         self.assertIn("========== Workflow Cycle 1/1 ==========", stdout)
-        self.assertIn("--- ExecPlan Planning ---", stdout)
+        self.assertIn("--- Refactor Discovery ---", stdout)
         self.assertIn("[Response]", stdout)
         self.assertIn("Planning stage 1.", stdout)
         self.assertNotIn("running tests", stdout)
@@ -1135,8 +1138,8 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("[started]", stdout)
         self.assertNotIn("=== Stage 1/4", stdout)
         self.assertIn("Tokens this turn: total=100 input=10 cached=1 output=20 reasoning=5", stdout)
-        self.assertIn("Tokens cumulative: total=400 input=40 cached=4 output=80 reasoning=20", stdout)
-        self.assertIn("=== Stage 1/4: execplan-create ===", log_text)
+        self.assertIn("Tokens cumulative: total=600 input=60 cached=6 output=120 reasoning=30", stdout)
+        self.assertIn("=== Stage 1/6: find-refactor-candidates ===", log_text)
         self.assertIn("running tests", log_text)
         self.assertIn("[fileChange] wrote files", log_text)
         self.assertIn("[mcp] Tool progress", log_text)
@@ -1152,7 +1155,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(methods[:4], ["initialize", "initialized", "account/read", "thread/start"])
         self.assertEqual(methods.count("thread/start"), 1)
-        self.assertEqual(methods.count("turn/start"), 4)
+        self.assertEqual(methods.count("turn/start"), 6)
         initialize = next(message for message in inbound if message.get("method") == "initialize")
         self.assertTrue(initialize["params"]["capabilities"]["experimentalApi"])
 
@@ -1247,12 +1250,12 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(methods.count("thread/start"), 2)
-        self.assertEqual(methods.count("turn/start"), 8)
+        self.assertEqual(methods.count("turn/start"), 12)
 
-    def test_refactor_mode_fails_when_cycle_does_not_create_pending_execplan(self) -> None:
+    def test_workflow_fails_when_cycle_does_not_create_pending_execplan(self) -> None:
         exit_code, _, stderr, _ = self.run_pipeline(
             "refactor_missing_execplan",
-            argv=["--mode", "refactor", "--prompt", PROMPT],
+            argv=["--prompt", PROMPT],
         )
 
         self.assertEqual(exit_code, 1)
@@ -1287,9 +1290,9 @@ class CliTests(unittest.TestCase):
         methods = [message.get("method") for message in inbound if "method" in message]
 
         self.assertEqual(exit_code, 0)
-        self.assertIn("retrying stage `execplan-create`", stderr)
+        self.assertIn("retrying stage `find-refactor-candidates`", stderr)
         self.assertEqual(methods.count("thread/start"), 1)
-        self.assertEqual(methods.count("turn/start"), 5)
+        self.assertEqual(methods.count("turn/start"), 7)
         self.assertIn("[retry] waiting 0.0 second(s) before attempt 2", log_text)
 
     def test_reader_error_restarts_app_server_and_recovers(self) -> None:
@@ -1364,7 +1367,7 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
-        self.assertEqual(len(turn_starts), 4)
+        self.assertEqual(len(turn_starts), 6)
         self.assertIn("continuing after transient failure in stage `implement-execplan`", stdout)
 
     def test_fake_server_spawn_override_drives_cli_path(self) -> None:
@@ -1442,7 +1445,6 @@ class CliTests(unittest.TestCase):
 
     def test_build_stages_respects_custom_counts(self) -> None:
         stages = build_stages(
-            "pipeline",
             PROMPT,
             cycles=2,
             improvement_count=1,
@@ -1451,15 +1453,14 @@ class CliTests(unittest.TestCase):
             review_skill_name="review-recent-work-subagents",
         )
 
-        self.assertEqual(len(stages), 10)
-        self.assertEqual(stages[0].label, "cycle-1-execplan-create")
-        self.assertEqual(stages[4].label, "cycle-1-review-recent-work-subagents-2")
-        self.assertEqual(stages[5].label, "cycle-2-execplan-create")
+        self.assertEqual(len(stages), 14)
+        self.assertEqual(stages[0].label, "cycle-1-find-refactor-candidates")
+        self.assertEqual(stages[4].label, "cycle-1-implement-execplan")
+        self.assertEqual(stages[5].label, "cycle-1-review-recent-work-subagents-1")
         self.assertEqual(stages[-1].label, "cycle-2-review-recent-work-subagents-2")
 
     def test_build_stages_respects_selected_follow_up_skills(self) -> None:
         stages = build_stages(
-            "pipeline",
             PROMPT,
             cycles=1,
             improvement_count=1,
@@ -1469,6 +1470,8 @@ class CliTests(unittest.TestCase):
         )
 
         self.assertEqual([stage.label for stage in stages], [
+            "find-refactor-candidates",
+            "select-refactor",
             "execplan-create",
             "execplan-improve-1",
             "implement-execplan",
@@ -1519,7 +1522,7 @@ class CliTests(unittest.TestCase):
         ]
 
         self.assertEqual(exit_code, 1)
-        self.assertEqual(len(turn_starts), 3)
+        self.assertEqual(len(turn_starts), 5)
         self.assertIn("left workspace changes that make replay unsafe", stderr)
 
 

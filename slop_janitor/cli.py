@@ -195,38 +195,6 @@ def build_follow_up_stages(
     ]
 
 
-def build_pipeline_stages(
-    prompt: str,
-    *,
-    cycles: int,
-    improvement_count: int,
-    review_count: int,
-    improve_skill_name: str,
-    review_skill_name: str,
-) -> list[Stage]:
-    stages: list[Stage] = []
-    for cycle_index in range(1, cycles + 1):
-        stages.append(
-            Stage(
-                label=stage_label("execplan-create", cycle_index=cycle_index, cycles=cycles),
-                skill_name="execplan-create",
-                skill_path=str(SKILL_PATHS["execplan-create"]),
-                text=f"$execplan-create {prompt}",
-            )
-        )
-        stages.extend(
-            build_follow_up_stages(
-                cycle_index=cycle_index,
-                cycles=cycles,
-                improvement_count=improvement_count,
-                review_count=review_count,
-                improve_skill_name=improve_skill_name,
-                review_skill_name=review_skill_name,
-            )
-        )
-    return stages
-
-
 def build_refactor_stages(
     prompt: str | None,
     *,
@@ -312,7 +280,6 @@ def validate_counts(
 
 
 def build_stages(
-    mode: str,
     prompt: str | None,
     *,
     cycles: int,
@@ -326,27 +293,14 @@ def build_stages(
         improvement_count=improvement_count,
         review_count=review_count,
     )
-    if mode == "pipeline":
-        if not prompt:
-            raise AppServerError("`--prompt` is required when `--mode pipeline` is selected")
-        return build_pipeline_stages(
-            prompt,
-            cycles=cycles,
-            improvement_count=improvement_count,
-            review_count=review_count,
-            improve_skill_name=improve_skill_name,
-            review_skill_name=review_skill_name,
-        )
-    if mode == "refactor":
-        return build_refactor_stages(
-            prompt,
-            cycles=cycles,
-            improvement_count=improvement_count,
-            review_count=review_count,
-            improve_skill_name=improve_skill_name,
-            review_skill_name=review_skill_name,
-        )
-    raise AppServerError(f"unsupported mode: {mode}")
+    return build_refactor_stages(
+        prompt,
+        cycles=cycles,
+        improvement_count=improvement_count,
+        review_count=review_count,
+        improve_skill_name=improve_skill_name,
+        review_skill_name=review_skill_name,
+    )
 
 
 def resolve_codex_workspace(cli_value: str | None) -> Path:
@@ -466,7 +420,6 @@ def run_auth(
 def build_run_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="slop-janitor")
     parser.add_argument("--codex-workspace")
-    parser.add_argument("--mode", choices=("pipeline", "refactor"), default="pipeline")
     parser.add_argument("--prompt")
     parser.add_argument(
         "--linked-repo",
@@ -783,14 +736,12 @@ def maybe_commit_for_stage(
     run_logger: RunLogger,
     stage: Stage,
     *,
-    mode: str,
     stage_index: int,
     improvement_count: int,
     review_count: int,
 ) -> None:
     message = checkpoint_message_for_stage(
         stage,
-        mode=mode,
         stage_index=stage_index,
         improvement_count=improvement_count,
         review_count=review_count,
@@ -804,14 +755,12 @@ def maybe_commit_for_stages(
     run_logger: RunLogger,
     stage: Stage,
     *,
-    mode: str,
     stage_index: int,
     improvement_count: int,
     review_count: int,
 ) -> None:
     message = checkpoint_message_for_stage(
         stage,
-        mode=mode,
         stage_index=stage_index,
         improvement_count=improvement_count,
         review_count=review_count,
@@ -820,102 +769,92 @@ def maybe_commit_for_stages(
         maybe_commit_checkpoints(auto_commits, run_logger, message)
 
 
-def planning_stage_count(mode: str) -> int:
-    return 3 if mode == "refactor" else 1
+def planning_stage_count() -> int:
+    return 3
 
 
-def stages_per_cycle(*, mode: str, improvement_count: int, review_count: int) -> int:
-    return planning_stage_count(mode) + improvement_count + review_count + 1
+def stages_per_cycle(*, improvement_count: int, review_count: int) -> int:
+    return planning_stage_count() + improvement_count + review_count + 1
 
 
-def cycle_number_for_stage_index(stage_index: int, *, mode: str, improvement_count: int, review_count: int) -> int:
+def cycle_number_for_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> int:
     return ((stage_index - 1) // stages_per_cycle(
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
     )) + 1
 
 
-def cycle_stage_position(stage_index: int, *, mode: str, improvement_count: int, review_count: int) -> int:
+def cycle_stage_position(stage_index: int, *, improvement_count: int, review_count: int) -> int:
     return ((stage_index - 1) % stages_per_cycle(
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
     )) + 1
 
 
-def final_planning_stage_position(*, mode: str, improvement_count: int) -> int:
-    return planning_stage_count(mode) + improvement_count
+def final_planning_stage_position(*, improvement_count: int) -> int:
+    return planning_stage_count() + improvement_count
 
 
-def implementation_stage_position(*, mode: str, improvement_count: int) -> int:
-    return final_planning_stage_position(mode=mode, improvement_count=improvement_count) + 1
+def implementation_stage_position(*, improvement_count: int) -> int:
+    return final_planning_stage_position(improvement_count=improvement_count) + 1
 
 
-def is_cycle_start_stage_index(stage_index: int, *, mode: str, improvement_count: int, review_count: int) -> bool:
+def is_cycle_start_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
     return cycle_stage_position(
         stage_index,
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
     ) == 1
 
 
-def is_final_planning_stage_index(stage_index: int, *, mode: str, improvement_count: int, review_count: int) -> bool:
+def is_final_planning_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
     return cycle_stage_position(
         stage_index,
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
-    ) == final_planning_stage_position(mode=mode, improvement_count=improvement_count)
+    ) == final_planning_stage_position(improvement_count=improvement_count)
 
 
-def is_implementation_stage_index(stage_index: int, *, mode: str, improvement_count: int, review_count: int) -> bool:
+def is_implementation_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
     return cycle_stage_position(
         stage_index,
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
-    ) == implementation_stage_position(mode=mode, improvement_count=improvement_count)
+    ) == implementation_stage_position(improvement_count=improvement_count)
 
 
-def is_final_review_stage_index(stage_index: int, *, mode: str, improvement_count: int, review_count: int) -> bool:
+def is_final_review_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
     if review_count == 0:
         return False
     return cycle_stage_position(
         stage_index,
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
     ) == stages_per_cycle(
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
     )
 
 
-def is_follow_on_review_stage_index(stage_index: int, *, mode: str, improvement_count: int, review_count: int) -> bool:
+def is_follow_on_review_stage_index(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
     if review_count <= 1:
         return False
     return cycle_stage_position(
         stage_index,
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
-    ) > implementation_stage_position(mode=mode, improvement_count=improvement_count) + 1
+    ) > implementation_stage_position(improvement_count=improvement_count) + 1
 
 
 def checkpoint_message_for_stage(
     stage: Stage,
     *,
-    mode: str,
     stage_index: int,
     improvement_count: int,
     review_count: int,
 ) -> str | None:
     if stage_should_checkpoint(
         stage_index,
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
     ):
@@ -923,24 +862,21 @@ def checkpoint_message_for_stage(
     return None
 
 
-def stage_should_checkpoint(stage_index: int, *, mode: str, improvement_count: int, review_count: int) -> bool:
+def stage_should_checkpoint(stage_index: int, *, improvement_count: int, review_count: int) -> bool:
     return any(
         (
             is_final_planning_stage_index(
                 stage_index,
-                mode=mode,
                 improvement_count=improvement_count,
                 review_count=review_count,
             ),
             is_implementation_stage_index(
                 stage_index,
-                mode=mode,
                 improvement_count=improvement_count,
                 review_count=review_count,
             ),
             is_final_review_stage_index(
                 stage_index,
-                mode=mode,
                 improvement_count=improvement_count,
                 review_count=review_count,
             ),
@@ -948,10 +884,9 @@ def stage_should_checkpoint(stage_index: int, *, mode: str, improvement_count: i
     )
 
 
-def stage_should_start_clean(*, mode: str, stage_index: int, improvement_count: int, review_count: int) -> bool:
+def stage_should_start_clean(*, stage_index: int, improvement_count: int, review_count: int) -> bool:
     return not is_follow_on_review_stage_index(
         stage_index,
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
     )
@@ -959,7 +894,6 @@ def stage_should_start_clean(*, mode: str, stage_index: int, improvement_count: 
 
 def terminal_phase_label(
     *,
-    mode: str,
     stage: Stage,
     stage_index: int,
     improvement_count: int,
@@ -967,7 +901,6 @@ def terminal_phase_label(
 ) -> str:
     position = cycle_stage_position(
         stage_index,
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
     )
@@ -978,18 +911,17 @@ def terminal_phase_label(
     if stage.skill_name == "execplan-create":
         return "ExecPlan Planning"
     if stage.skill_name in IMPROVE_SKILL_CHOICES:
-        improve_index = position - planning_stage_count(mode)
+        improve_index = position - planning_stage_count()
         return f"Improvement Pass {improve_index}/{improvement_count}"
     if stage.skill_name == "implement-execplan":
         return "Implementation"
-    review_index = position - implementation_stage_position(mode=mode, improvement_count=improvement_count)
+    review_index = position - implementation_stage_position(improvement_count=improvement_count)
     return f"Review Pass {review_index}/{review_count}"
 
 
 def write_terminal_stage_heading(
     run_logger: RunLogger,
     *,
-    mode: str,
     stage: Stage,
     stage_index: int,
     total_stages: int,
@@ -999,12 +931,10 @@ def write_terminal_stage_heading(
 ) -> None:
     cycle_number = cycle_number_for_stage_index(
         stage_index,
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
     )
     phase_label = terminal_phase_label(
-        mode=mode,
         stage=stage,
         stage_index=stage_index,
         improvement_count=improvement_count,
@@ -1014,7 +944,6 @@ def write_terminal_stage_heading(
     run_logger.write_line("")
     if is_cycle_start_stage_index(
         stage_index,
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
     ):
@@ -1189,9 +1118,8 @@ def ensure_auto_commit_workspaces_clean(
         )
 
 
-def stage_should_end_clean(*, mode: str, stage_index: int, improvement_count: int, review_count: int) -> bool:
+def stage_should_end_clean(*, stage_index: int, improvement_count: int, review_count: int) -> bool:
     return stage_should_checkpoint(
-        mode=mode,
         stage_index=stage_index,
         improvement_count=improvement_count,
         review_count=review_count,
@@ -1382,7 +1310,6 @@ def stage_postconditions_satisfied(
     *,
     run_cwd: Path,
     stage: Stage,
-    mode: str,
     stage_index: int,
     improvement_count: int,
     review_count: int,
@@ -1390,7 +1317,6 @@ def stage_postconditions_satisfied(
 ) -> tuple[bool, str | None]:
     if is_cycle_start_stage_index(
         stage_index,
-        mode=mode,
         improvement_count=improvement_count,
         review_count=review_count,
     ):
@@ -1451,7 +1377,7 @@ def start_client_and_thread(
         account_info = client.get_account(request_timeout_seconds=request_timeout_seconds)
         if account_info.get("requiresOpenaiAuth") and account_info.get("account") is None:
             raise AppServerError(
-                "OpenAI auth is required before starting the pipeline. Run `./slop-janitor auth login`."
+                "OpenAI auth is required before starting the workflow. Run `./slop-janitor auth login`."
             )
         return client, client.start_thread(
             str(run_cwd),
@@ -1474,7 +1400,6 @@ def execute_stage_with_recovery(
     run_cwd: Path,
     auto_commits: list[AutoCommitState],
     stage: Stage,
-    mode: str,
     stage_index: int,
     improvement_count: int,
     review_count: int,
@@ -1524,7 +1449,6 @@ def execute_stage_with_recovery(
         postconditions_satisfied, postcondition_reason = stage_postconditions_satisfied(
             run_cwd=run_cwd,
             stage=stage,
-            mode=mode,
             stage_index=stage_index,
             improvement_count=improvement_count,
             review_count=review_count,
@@ -1601,7 +1525,6 @@ def execute_stage_with_recovery(
 
 def maybe_delay_between_cycles(
     *,
-    mode: str,
     stage_index: int,
     total_stages: int,
     improvement_count: int,
@@ -1613,7 +1536,7 @@ def maybe_delay_between_cycles(
         return
     if stage_index >= total_stages:
         return
-    if stage_index % stages_per_cycle(mode=mode, improvement_count=improvement_count, review_count=review_count) != 0:
+    if stage_index % stages_per_cycle(improvement_count=improvement_count, review_count=review_count) != 0:
         return
     run_logger.write_line(
         f"Sleeping {delay_between_cycles_minutes} minute(s) before the next cycle.",
@@ -1639,13 +1562,13 @@ def run(
         run_logger = create_run_logger(
             runs_dir=runs_dir or DEFAULT_RUNS_DIR,
             run_cwd=run_cwd,
-            mode=args.mode,
+            mode="refactor",
             prompt=args.prompt,
         )
         run_state = RunStateTracker(
             run_logger.log_path.with_suffix(".state.json"),
             run_cwd=run_cwd,
-            mode=args.mode,
+            mode="refactor",
             prompt=args.prompt,
         )
         run_logger.write_line(f"cycles={args.cycles}")
@@ -1671,7 +1594,6 @@ def run(
             retry_max_delay_seconds=args.retry_max_delay_seconds,
         )
         stages = build_stages(
-            args.mode,
             args.prompt,
             cycles=args.cycles,
             improvement_count=args.improvements,
@@ -1708,7 +1630,6 @@ def run(
         for index, stage in enumerate(stages, start=1):
             if is_cycle_start_stage_index(
                 index,
-                mode=args.mode,
                 improvement_count=args.improvements,
                 review_count=args.review,
             ):
@@ -1732,7 +1653,6 @@ def run(
                     )
                 run_state.update(status="ready", currentThreadId=thread_id, currentCycle=cycle_number_for_stage_index(
                     index,
-                    mode=args.mode,
                     improvement_count=args.improvements,
                     review_count=args.review,
                 ))
@@ -1740,7 +1660,6 @@ def run(
             if thread_id is None:
                 raise AppServerError("failed to start a cycle thread")
             if stage_should_start_clean(
-                mode=args.mode,
                 stage_index=index,
                 improvement_count=args.improvements,
                 review_count=args.review,
@@ -1750,7 +1669,6 @@ def run(
                 ensure_execplan_exists(run_cwd, stage)
             write_terminal_stage_heading(
                 run_logger,
-                mode=args.mode,
                 stage=stage,
                 stage_index=index,
                 total_stages=len(stages),
@@ -1768,7 +1686,6 @@ def run(
                 run_cwd=run_cwd,
                 auto_commits=auto_commits,
                 stage=stage,
-                mode=args.mode,
                 stage_index=index,
                 improvement_count=args.improvements,
                 review_count=args.review,
@@ -1786,7 +1703,6 @@ def run(
                 write_token_footer(run_logger, outcome.token_usage)
             if is_cycle_start_stage_index(
                 index,
-                mode=args.mode,
                 improvement_count=args.improvements,
                 review_count=args.review,
             ):
@@ -1801,20 +1717,17 @@ def run(
                 auto_commits,
                 run_logger,
                 stage,
-                mode=args.mode,
                 stage_index=index,
                 improvement_count=args.improvements,
                 review_count=args.review,
             )
             if stage_should_end_clean(
-                mode=args.mode,
                 stage_index=index,
                 improvement_count=args.improvements,
                 review_count=args.review,
             ):
                 ensure_auto_commit_workspaces_clean(auto_commits, run_cwd, stage, phase="end")
             maybe_delay_between_cycles(
-                mode=args.mode,
                 stage_index=index,
                 total_stages=len(stages),
                 improvement_count=args.improvements,
