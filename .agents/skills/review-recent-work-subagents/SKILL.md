@@ -80,10 +80,11 @@ When looking for `.agent/` contents, check both the worktree `.agent/` and the b
 
 ## Inputs
 
-- Preferred: an explicit path to the completed ExecPlan you want reviewed.
-- Default: the most recently modified Markdown file under `.agent/done/`.
+- Preferred: an explicit work-item path or explicit completed `execplan.md` path.
+- Default: the active or most recently updated work item whose `meta.json` says `stage="implementation"` and `state="completed"`.
+- Legacy fallback: the most recently modified Markdown file under `.agent/done/`.
 
-If no completed ExecPlan exists, stop and tell the user.
+If no completed ExecPlan exists in any supported location, stop and tell the user.
 
 ## Workflow
 
@@ -98,13 +99,19 @@ Before doing any repo work, inspect only the immediately previous assistant turn
 
 ### Step 1: Resolve the review target and review surface
 
-If the user supplied a completed ExecPlan path, use it.
+If the user supplied a completed work-item or plan path, use it.
 
-Otherwise:
+Otherwise resolve, in order:
 
-1. Search `.agent/done/` in both the worktree and base repo.
-2. Select the most recently modified `*.md` file.
-3. Treat that file as the implementation contract for this review pass.
+1. `.agent/active` when it points to a work item with `stage="implementation"` and `state="completed"`.
+2. The most recently updated work item under `.agent/work/` with the same metadata.
+3. Legacy `.agent/done/` fallback.
+
+If operating on a work item, read:
+
+- `meta.json`
+- `decision.md` when present
+- `execplan.md`
 
 Read the entire target ExecPlan. Extract the planned behavior, touched files, validation commands, acceptance criteria, and any risks or discoveries already recorded in the plan.
 
@@ -258,7 +265,3 @@ If every wave 1 child returns exactly `skip`, return exactly `skip` and nothing 
 
 - **Review-only drift:** do not stop at findings when the right repair is clear and local.
 - **Parallel fixing:** subagents must not edit code; the parent agent must make all edits.
-- **Speculative findings:** every issue must trace back to the repository.
-- **Finding inflation:** do not pad the report with style nits or weak concerns.
-- **Duplicated synthesis:** the parent must merge and prioritize; do not paste eight raw reviews into the final output.
-- **Review drift:** do not review unrelated older changes just because they are nearby.

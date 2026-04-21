@@ -13,7 +13,7 @@ Review the latest implemented ExecPlan as a fresh-eyes code review pass. Fix iss
 
 This skill is intended to run immediately after `$implement-execplan`.
 
-## Ousterhout lens
+## Ousterhout Lens
 
 Use John Ousterhout's design philosophy as part of the review standard, not just correctness:
 
@@ -46,10 +46,11 @@ When looking for `.agent/` contents, check both the worktree `.agent/` and the b
 
 ## Inputs
 
-- Preferred: an explicit path to the completed ExecPlan you want reviewed.
-- Default: the most recently modified Markdown file under `.agent/done/`.
+- Preferred: an explicit work-item path or explicit completed `execplan.md` path.
+- Default: the active or most recently updated work item whose `meta.json` says `stage="implementation"` and `state="completed"`.
+- Legacy fallback: the most recently modified Markdown file under `.agent/done/`.
 
-If no completed ExecPlan exists, stop and tell the user.
+If no completed ExecPlan exists in any supported location, stop and tell the user.
 
 ## Workflow
 
@@ -66,15 +67,21 @@ Before doing any repo work, inspect only the immediately previous assistant turn
 
 ## Resolve the Review Target
 
-If the user supplied a plan path, use it.
+If the user supplied a work-item or plan path, use it.
 
-Otherwise:
+Otherwise resolve, in order:
 
-1. Search `.agent/done/` in both the worktree and base repo.
-2. Select the most recently modified `*.md` file.
-3. Treat that file as the implementation contract for this review pass.
+1. `.agent/active` when it points to a work item with `stage="implementation"` and `state="completed"`.
+2. The most recently updated work item under `.agent/work/` with the same metadata.
+3. Legacy `.agent/done/` fallback.
 
-Read the entire target ExecPlan. Extract the planned behavior, touched files, validation commands, acceptance criteria, and any risks or discoveries already recorded in the plan.
+If operating on a work item, read:
+
+- `meta.json`
+- `decision.md` when present
+- `execplan.md`
+
+Extract the planned behavior, touched files, validation commands, acceptance criteria, and any risks or discoveries already recorded in the plan.
 
 ## Build the Review Surface
 
@@ -92,7 +99,7 @@ Treat the review surface as the union of:
 - files touched by the most recent commit when the working tree is clean
 - adjacent tests, helpers, and importers needed to judge correctness
 
-If the latest implemented ExecPlan and the observable recent code changes clearly do not overlap, stop and report that mismatch rather than guessing.
+If the completed ExecPlan and the observable recent code changes clearly do not overlap, stop and report that mismatch rather than guessing.
 
 ### Step 1: Reconstruct intent
 

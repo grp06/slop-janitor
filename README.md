@@ -8,12 +8,12 @@
 
 Using Codex well usually means manually queuing a long chain of follow-up messages:
 
-- ask Codex what the best refactor is
-- ask it to improve that plan
-- ask it to improve it again
+- ask Codex for materially different refactor candidates
+- ask it to pressure-test the shortlist and lock one refactor
+- ask it to turn that decision into an exec plan
+- ask it to improve the plan
 - ask it to implement the plan
 - ask it to review the result
-- ask it to review it again with fresh eyes
 
 `slop-janitor` runs that loop for you on one thread.
 
@@ -26,24 +26,34 @@ It also writes a complete run log, so the session is inspectable after the fact 
 By default, one cycle is:
 
 1. `execplan-create`
-2. `execplan-improve-subagents` x4
+2. `execplan-improve`
 3. `implement-execplan`
-4. `review-recent-work-subagents` x5
+4. `review-recent-work`
 
 You can change the number of full cycles, improvement passes, and review passes.
 You can also swap the follow-up skills with `--improve-skill` and `--review-skill`.
+
+In `--mode refactor`, the cycle grows a three-stage front end:
+
+1. `find-refactor-candidates`
+2. `select-refactor`
+3. `execplan-create`
+4. `execplan-improve`
+5. `implement-execplan`
+6. `review-recent-work`
 
 ## Bundled Skills
 
 The loop is built from a small set of repo-local skills in `.agents/skills`:
 
-- `find-best-refactor`: finds the highest-leverage refactor.
-- `execplan-create`: turns a prompt into an exec plan.
-- `execplan-improve-subagents`: pressure-tests and rewrites that plan with a two-wave subagent audit.
-- `implement-execplan`: implements the plan.
-- `review-recent-work-subagents`: reviews the result with a two-wave subagent review-and-fix pass.
+- `find-refactor-candidates`: searches the repo from first principles and writes a candidate shortlist into a work item.
+- `select-refactor`: pressure-tests that shortlist and locks the winning refactor before planning starts.
+- `execplan-create`: turns either a locked refactor decision or a raw prompt into an ExecPlan.
+- `execplan-improve`: rewrites that plan with code-grounded corrections and missing details.
+- `implement-execplan`: executes the active work-item ExecPlan while updating work-item state.
+- `review-recent-work`: reviews the most recently implemented ExecPlan work and fixes obvious issues immediately.
 
-The most important step is `execplan-improve-subagents`. Fixing a weak plan is cheaper than fixing bugs later.
+Optional subagent variants for plan improvement and review are still bundled, but they are now follow-up choices rather than the default path.
 
 ## Prerequisites
 
@@ -113,11 +123,11 @@ cd /path/to/target-repo
 /path/to/slop-janitor/slop-janitor --prompt "help me build a CRM" --cycles 2 --improvements 5 --review 3
 ```
 
-Use the non-subagent follow-up skills instead:
+Use the subagent follow-up skills instead:
 
 ```bash
 cd /path/to/target-repo
-/path/to/slop-janitor/slop-janitor --mode refactor --improvements 5 --improve-skill execplan-improve --review 5 --review-skill review-recent-work
+/path/to/slop-janitor/slop-janitor --mode refactor --improvements 3 --improve-skill execplan-improve-subagents --review 2 --review-skill review-recent-work-subagents
 ```
 
 Make sibling repos writable and auto-managed explicitly when one run needs to touch both:
@@ -138,15 +148,15 @@ cd /path/to/target-repo
 
 ## Modes And Counts
 
-`--mode pipeline` is the default. It requires `--prompt` and starts with `execplan-create`.
+`--mode pipeline` is the default. It requires `--prompt` and starts with `execplan-create`. In pipeline mode, `execplan-create` now prefers the work-item format under `.agent/work/<id-slug>/` and the follow-up skills keep operating on that active work item.
 
-`--mode refactor` keeps the same follow-up structure, but replaces stage 1 with `find-best-refactor`. `--prompt` is optional in refactor mode. If you omit it, the first stage asks for the single highest-leverage refactor in the current repository.
+`--mode refactor` prepends three planning stages before the follow-up loop: `find-refactor-candidates`, `select-refactor`, and `execplan-create`. `--prompt` is optional in refactor mode. If you omit it, stage 1 asks for materially different refactor candidates in the current repository.
 
 `--cycles` controls how many times the full loop runs.
 
-`--improvements` controls how many `execplan-improve-subagents` turns run inside each cycle.
+`--improvements` controls how many plan-improvement turns run inside each cycle.
 
-`--review` controls how many `review-recent-work-subagents` turns run inside each cycle.
+`--review` controls how many review turns run inside each cycle.
 
 `--improve-skill` selects the planning-improvement skill for each improvement pass. Choices are `execplan-improve-subagents` and `execplan-improve`.
 
@@ -156,14 +166,24 @@ cd /path/to/target-repo
 
 `--sandbox` controls the Codex filesystem sandbox. Choices are `workspace-write` and `danger-full-access`. The default is `workspace-write`.
 
+`--stage-idle-timeout-seconds` controls how long a stage may go without any app-server activity before `slop-janitor` treats it as stuck and restarts recovery. The default is `900`.
+
+`--max-stage-retries` controls how many retry attempts are allowed after the first failure for a single stage. The default is `6`.
+
+`--retry-initial-delay-seconds` and `--retry-max-delay-seconds` control the capped exponential backoff between retry attempts. The defaults are `15` and `300`.
+
 Defaults:
 
 - `--cycles 1`
-- `--improvements 4`
-- `--improve-skill execplan-improve-subagents`
-- `--review 5`
-- `--review-skill review-recent-work-subagents`
+- `--improvements 1`
+- `--improve-skill execplan-improve`
+- `--review 1`
+- `--review-skill review-recent-work`
 - `--sandbox workspace-write`
+- `--stage-idle-timeout-seconds 900`
+- `--max-stage-retries 6`
+- `--retry-initial-delay-seconds 15`
+- `--retry-max-delay-seconds 300`
 
 When `--cycles` is greater than 1, stage labels in the run log are cycle-qualified, for example `cycle-2-execplan-create`.
 
@@ -196,7 +216,7 @@ Before stage 1, the client performs:
 
 If `account/read` says OpenAI auth is required and no account is logged in, the command fails immediately and tells you to run `./slop-janitor auth login`.
 
-After that, every stage runs as a `turn/start` on the same thread. That is what gives the workflow continuity. The implementation and review stages see the plan that was just created and improved.
+After that, every stage in a cycle runs as a `turn/start` on the same thread. That is what gives the workflow continuity. The selection, planning, implementation, and review stages all see the same active work item and the same thread history for that cycle.
 
 ## Output Model
 
@@ -217,6 +237,8 @@ Everything else goes to the run log:
 
 Each run writes a full log to `runs/`. Log filenames start with the basename of the directory you launched from, followed by a UTC timestamp, for example `my-repo-20260317T213000Z.log`.
 
+Each run also writes a machine-readable state file next to the log, using the same basename with a `.state.json` suffix. The state file tracks the current stage, retry attempt, thread id, and recovery status so long autonomous runs stay inspectable.
+
 This split is deliberate. The terminal stays readable while the log remains complete.
 
 ## Reliability Contract
@@ -225,8 +247,12 @@ This split is deliberate. The terminal stays readable while the log remains comp
 - Model settings are inherited from your current Codex config. `slop-janitor` overrides the thread `cwd`, forces `approvalPolicy: "never"`, and applies the selected sandbox mode for the whole run.
 - In the default `workspace-write` sandbox, `slop-janitor` makes every managed repo root writable, not just the launch directory. The run log records the exact writable roots before stage 1.
 - The thread uses `approvalPolicy: "never"`.
-- Auto-managed repos that start clean are required to stay clean at stage boundaries, except for the pending ExecPlan artifact in the primary repo while plan-improvement or implementation is in progress.
+- Auto-managed repos that start clean are required to stay clean at stage boundaries, except for the workflow artifacts under `.agent/` in the primary repo while candidate selection, planning, or implementation is in progress.
 - Auto-managed repos are checkpointed after the final planning pass in a cycle, after `implement-execplan`, and after the final review pass in a cycle when those stages leave code changes behind.
+- Transient model-capacity failures such as `serverOverloaded` are retried automatically with capped exponential backoff.
+- If a stage stops producing app-server activity, or the app-server process dies mid-stage, `slop-janitor` restarts the app-server and retries the current stage on a fresh thread.
+- Before replaying a failed stage, `slop-janitor` compares the current workspace against a stage-start snapshot. If the stage appears to have partially changed repo state without satisfying a strong postcondition, the run stops instead of retrying blindly.
+- If a cycle-start stage already refreshed its primary workflow artifact, or `implement-execplan` already marked the active work item as completed, `slop-janitor` treats that stage as completed and continues rather than replaying it.
 - If the server asks for approvals, user input, permissions, MCP elicitation, or ChatGPT token refresh, `slop-janitor` responds deterministically, marks the stage failed, and exits after the matching `turn/completed`.
 - Successful turns require real token data from `thread/tokenUsage/updated`. If a turn completes successfully without token usage, the run fails instead of printing invented zeros.
 - Skill paths are validated before the app-server starts, so broken local setup fails early.

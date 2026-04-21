@@ -5,17 +5,14 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
 
 SKILLS_ROOT = str(Path(__file__).resolve().parents[2] / ".agents" / "skills")
 PROMPT = "help me build a CRM"
-REFACTOR_STAGE_SUFFIX = (
-    "\n\nThis stage is planning only. Do not implement the refactor or modify repository code in this stage. "
-    "Write the chosen implementation-ready ExecPlan to .agent/execplan-pending.md in the current working "
-    "repository, then stop."
-)
+DEFAULT_REFACTOR_PROMPT = "identify the top materially different refactor candidates in this repository"
 
 
 def build_follow_up_stages(
@@ -30,20 +27,20 @@ def build_follow_up_stages(
             {
                 "skill_name": improve_skill_name,
                 "skill_path": f"{SKILLS_ROOT}/{improve_skill_name}/SKILL.md",
-                "text": f"${improve_skill_name} improve the pending execution plan at .agent/execplan-pending.md",
+                "text": f"${improve_skill_name} improve the active work-item ExecPlan and rewrite it in place",
             }
             for _ in range(improvement_count)
         ],
         {
             "skill_name": "implement-execplan",
             "skill_path": f"{SKILLS_ROOT}/implement-execplan/SKILL.md",
-            "text": "$implement-execplan implement the pending execution plan at .agent/execplan-pending.md",
+            "text": "$implement-execplan implement the active work-item ExecPlan",
         },
         *[
             {
                 "skill_name": review_skill_name,
                 "skill_path": f"{SKILLS_ROOT}/{review_skill_name}/SKILL.md",
-                "text": f"${review_skill_name} review the most recently implemented ExecPlan work",
+                "text": f"${review_skill_name} review the most recently implemented work-item ExecPlan",
             }
             for _ in range(review_count)
         ],
@@ -88,19 +85,27 @@ def build_expected_refactor_stages(
     improve_skill_name: str,
     review_skill_name: str,
 ) -> list[dict[str, str]]:
-    if prompt:
-        refactor_prompt = prompt
-    else:
-        refactor_prompt = "find the single highest-leverage refactor in this repository"
-    text = f"$find-best-refactor {refactor_prompt}{REFACTOR_STAGE_SUFFIX}"
     stages: list[dict[str, str]] = []
     for _ in range(cycles):
-        stages.append(
-            {
-                "skill_name": "find-best-refactor",
-                "skill_path": f"{SKILLS_ROOT}/find-best-refactor/SKILL.md",
-                "text": text,
-            }
+        refactor_prompt = prompt or DEFAULT_REFACTOR_PROMPT
+        stages.extend(
+            [
+                {
+                    "skill_name": "find-refactor-candidates",
+                    "skill_path": f"{SKILLS_ROOT}/find-refactor-candidates/SKILL.md",
+                    "text": f"$find-refactor-candidates {refactor_prompt}",
+                },
+                {
+                    "skill_name": "select-refactor",
+                    "skill_path": f"{SKILLS_ROOT}/select-refactor/SKILL.md",
+                    "text": "$select-refactor pressure-test the active shortlist, lock the best refactor decision, and stop before planning.",
+                },
+                {
+                    "skill_name": "execplan-create",
+                    "skill_path": f"{SKILLS_ROOT}/execplan-create/SKILL.md",
+                    "text": "$execplan-create create an ExecPlan for the active refactor work item and write it into that work item",
+                },
+            ]
         )
         stages.extend(
             build_follow_up_stages(
@@ -113,6 +118,10 @@ def build_expected_refactor_stages(
     return stages
 
 
+def planning_stage_count(mode: str) -> int:
+    return 3 if mode == "refactor" else 1
+
+
 class ProtocolError(RuntimeError):
     pass
 
@@ -122,6 +131,10 @@ class FakeServer:
         self.scenario = scenario
         self.record_path = record_path
         self.transcript: list[dict[str, Any]] = []
+        previous_record: dict[str, Any] | None = None
+        if self.record_path.exists():
+            previous_record = json.loads(self.record_path.read_text(encoding="utf-8"))
+        self.session_index = len(previous_record.get("sessions", [])) if isinstance(previous_record, dict) else 0
         self.thread_id = "thread-0"
         self.thread_count = 0
         self.run_cwd: Path | None = None
@@ -130,10 +143,10 @@ class FakeServer:
             "mode": "pipeline",
             "prompt": PROMPT,
             "cycles": 1,
-            "improvements": 4,
-            "improve_skill": "execplan-improve-subagents",
-            "review": 5,
-            "review_skill": "review-recent-work-subagents",
+            "improvements": 1,
+            "improve_skill": "execplan-improve",
+            "review": 1,
+            "review_skill": "review-recent-work",
         }
         if config_path is not None:
             self.config.update(json.loads(config_path.read_text(encoding="utf-8")))
@@ -157,10 +170,52 @@ class FakeServer:
             )
         self.error: str | None = None
 
-    def pending_execplan_path(self) -> Path:
+    def active_link_path(self) -> Path:
         if self.run_cwd is None:
             raise ProtocolError("run cwd is not set")
-        return self.run_cwd / ".agent" / "execplan-pending.md"
+        return self.run_cwd / ".agent" / "active"
+
+    def work_item_path(self) -> Path:
+        if self.run_cwd is None:
+            raise ProtocolError("run cwd is not set")
+        return self.run_cwd / ".agent" / "work" / "2026-04-21-test-refactor"
+
+    def work_item_meta_path(self) -> Path:
+        return self.work_item_path() / "meta.json"
+
+    def work_item_execplan_path(self) -> Path:
+        return self.work_item_path() / "execplan.md"
+
+    def work_item_decision_path(self) -> Path:
+        return self.work_item_path() / "decision.md"
+
+    def work_item_candidates_path(self) -> Path:
+        return self.work_item_path() / "candidates.md"
+
+    def write_active_link(self) -> None:
+        active_path = self.active_link_path()
+        active_path.parent.mkdir(parents=True, exist_ok=True)
+        if active_path.exists() or active_path.is_symlink():
+            active_path.unlink()
+        active_path.symlink_to(self.work_item_path())
+
+    def write_meta(self, *, stage: str, state: str) -> None:
+        payload = {
+            "id": "2026-04-21-test-refactor",
+            "slug": "test-refactor",
+            "title": "Test refactor work item",
+            "created_at": "2026-04-21T10:00:00Z",
+            "updated_at": "2026-04-21T10:05:00Z",
+            "stage": stage,
+            "state": state,
+            "artifacts": {
+                "candidates": "candidates.md",
+                "decision": "decision.md",
+                "execplan": "execplan.md",
+                "review": None,
+            },
+        }
+        self.work_item_meta_path().write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
 
     def linked_studio_repo_path(self) -> Path:
         if self.run_cwd is None:
@@ -171,17 +226,29 @@ class FakeServer:
         if self.scenario == "refactor_missing_execplan":
             return
         stage = self.expected_stages[stage_index]
-        path = self.pending_execplan_path()
-        if stage["skill_name"] in {"execplan-create", "find-best-refactor"}:
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(f"plan for stage {stage_index + 1}\n", encoding="utf-8")
+        work_item_path = self.work_item_path()
+        if stage["skill_name"] == "find-refactor-candidates":
+            work_item_path.mkdir(parents=True, exist_ok=True)
+            self.write_active_link()
+            self.write_meta(stage="candidates", state="completed")
+            self.work_item_candidates_path().write_text(f"candidates for stage {stage_index + 1}\n", encoding="utf-8")
             return
-        if stage["skill_name"] == "implement-execplan" and path.exists():
-            done_dir = path.parent / "done"
-            done_dir.mkdir(parents=True, exist_ok=True)
-            done_path = done_dir / f"completed-{stage_index + 1}.md"
-            done_path.write_text(path.read_text(encoding="utf-8"), encoding="utf-8")
-            path.unlink()
+        if stage["skill_name"] == "select-refactor":
+            work_item_path.mkdir(parents=True, exist_ok=True)
+            self.write_active_link()
+            self.write_meta(stage="decision", state="completed")
+            self.work_item_decision_path().write_text(f"decision for stage {stage_index + 1}\n", encoding="utf-8")
+            return
+        if stage["skill_name"] in {"execplan-create", "execplan-improve", "execplan-improve-subagents"}:
+            work_item_path.mkdir(parents=True, exist_ok=True)
+            self.write_active_link()
+            self.write_meta(stage="plan", state="completed")
+            self.work_item_execplan_path().write_text(f"plan for stage {stage_index + 1}\n", encoding="utf-8")
+            return
+        if stage["skill_name"] == "implement-execplan":
+            work_item_path.mkdir(parents=True, exist_ok=True)
+            self.write_active_link()
+            self.write_meta(stage="implementation", state="completed")
         if self.scenario == "review_mutates_linked_repo" and stage["skill_name"] in {
             "review-recent-work",
             "review-recent-work-subagents",
@@ -269,13 +336,28 @@ class FakeServer:
         return message
 
     def write_record(self) -> None:
+        existing_sessions: list[dict[str, Any]] = []
+        if self.record_path.exists():
+            existing = json.loads(self.record_path.read_text(encoding="utf-8"))
+            if isinstance(existing, dict):
+                existing_sessions = list(existing.get("sessions", []))
+        session_record = {
+            "serverCwd": os.getcwd(),
+            "transcript": self.transcript,
+            "error": self.error,
+        }
+        sessions = [*existing_sessions, session_record]
+        transcript: list[dict[str, Any]] = []
+        for session in sessions:
+            transcript.extend(session.get("transcript", []))
         self.record_path.write_text(
             json.dumps(
                 {
                     "scenario": self.scenario,
                     "serverCwd": os.getcwd(),
-                    "transcript": self.transcript,
+                    "transcript": transcript,
                     "error": self.error,
+                    "sessions": sessions,
                 }
             ),
             encoding="utf-8",
@@ -434,6 +516,27 @@ class FakeServer:
         if self.scenario == "failed_turn":
             self.run_failed_turn_stage()
             return
+        if self.scenario == "retryable_stage_error":
+            self.run_retryable_stage_error()
+            return
+        if self.scenario == "reader_error_then_recover":
+            self.run_reader_error_then_recover()
+            return
+        if self.scenario == "hanging_turn_start_then_recover":
+            self.run_hanging_turn_start_then_recover()
+            return
+        if self.scenario == "retryable_impl_ambiguity":
+            self.run_retryable_impl_ambiguity()
+            return
+        if self.scenario == "approval_request_after_plan_refresh":
+            self.run_approval_request_after_plan_refresh()
+            return
+        if self.scenario == "retryable_impl_postcondition_success":
+            self.run_retryable_impl_postcondition_success()
+            return
+        if self.scenario == "retryable_impl_postcondition_missing_tokens":
+            self.run_retryable_impl_postcondition_missing_tokens()
+            return
         if self.scenario == "happy_path":
             self.run_happy_path()
             return
@@ -447,9 +550,10 @@ class FakeServer:
             return
         raise ProtocolError(f"unsupported scenario: {self.scenario}")
 
-    def validate_turn_start(self, message: dict[str, Any], stage_index: int) -> tuple[int, str]:
+    def validate_turn_start(self, message: dict[str, Any], stage_index: int, *, turn_id: str | None = None) -> tuple[int, str]:
         self.check_turn_start_inputs(message, stage_index)
-        turn_id = f"turn-{stage_index + 1}"
+        if turn_id is None:
+            turn_id = f"turn-{stage_index + 1}"
         self.send({"id": message["id"], "result": {"turn": {"id": turn_id, "status": "inProgress"}}})
         self.send(
             {
@@ -511,219 +615,398 @@ class FakeServer:
             turn["error"] = error
         self.send({"method": "turn/completed", "params": {"threadId": self.thread_id, "turn": turn}})
 
-    def run_happy_path(self) -> None:
-        cycle_length = int(self.config["improvements"]) + int(self.config["review"]) + 2
-        for stage_index in range(len(self.expected_stages)):
-            if stage_index > 0 and stage_index % cycle_length == 0:
+    def complete_successful_stage(self, stage_index: int, turn_id: str) -> None:
+        if stage_index == 0:
+            self.send(
+                {
+                    "method": "item/started",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "item": {"type": "agentMessage", "id": "agent-1", "text": "", "phase": "response"},
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "itemId": "agent-1",
+                        "delta": "Planning stage 1.\n",
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/started",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "item": {
+                            "type": "commandExecution",
+                            "id": "cmd-1",
+                            "command": "pytest -q",
+                            "cwd": "/tmp/crm-scratch",
+                            "status": "inProgress",
+                        },
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/commandExecution/outputDelta",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "itemId": "cmd-1",
+                        "delta": "running tests\n",
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "item": {
+                            "type": "commandExecution",
+                            "id": "cmd-1",
+                            "command": "pytest -q",
+                            "cwd": "/tmp/crm-scratch",
+                            "status": "completed",
+                            "exitCode": 0,
+                        },
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/started",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "item": {
+                            "type": "fileChange",
+                            "id": "file-1",
+                            "changes": [{"path": "a.py"}, {"path": "b.py"}],
+                            "status": "inProgress",
+                        },
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/fileChange/outputDelta",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "itemId": "file-1",
+                        "delta": "wrote files",
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "item": {
+                            "type": "fileChange",
+                            "id": "file-1",
+                            "changes": [{"path": "a.py"}, {"path": "b.py"}],
+                            "status": "completed",
+                        },
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/started",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "item": {
+                            "type": "mcpToolCall",
+                            "id": "mcp-1",
+                            "server": "docs",
+                            "tool": "search",
+                            "status": "inProgress",
+                        },
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/mcpToolCall/progress",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "itemId": "mcp-1",
+                        "message": "Tool progress",
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "item": {
+                            "type": "mcpToolCall",
+                            "id": "mcp-1",
+                            "server": "docs",
+                            "tool": "search",
+                            "status": "completed",
+                        },
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "item": {
+                            "type": "agentMessage",
+                            "id": "agent-1",
+                            "text": "Planning stage 1.\n",
+                            "phase": "response",
+                        },
+                    },
+                }
+            )
+        else:
+            item_id = f"agent-{stage_index + 1}"
+            self.send(
+                {
+                    "method": "item/started",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "item": {"type": "agentMessage", "id": item_id, "text": "", "phase": "response"},
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/agentMessage/delta",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "itemId": item_id,
+                        "delta": f"Stage {stage_index + 1} output.\n",
+                    },
+                }
+            )
+            self.send(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "threadId": self.thread_id,
+                        "turnId": turn_id,
+                        "item": {
+                            "type": "agentMessage",
+                            "id": item_id,
+                            "text": f"Stage {stage_index + 1} output.\n",
+                            "phase": "response",
+                        },
+                    },
+                }
+            )
+        self.complete_cycle_plan_side_effect(stage_index)
+        self.send_token_usage(turn_id, stage_index)
+        self.complete_turn(turn_id)
+
+    def run_happy_path(self, *, start_stage_index: int = 0) -> None:
+        cycle_length = planning_stage_count(str(self.config["mode"])) + int(self.config["improvements"]) + int(self.config["review"]) + 1
+        for stage_index in range(start_stage_index, len(self.expected_stages)):
+            if stage_index > start_stage_index and stage_index % cycle_length == 0:
                 self.handle_thread_start()
             turn_start = self.expect_request("turn/start")
             _, turn_id = self.validate_turn_start(turn_start, stage_index)
-            if stage_index == 0:
-                self.send(
-                    {
-                        "method": "item/started",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "item": {"type": "agentMessage", "id": "agent-1", "text": "", "phase": "response"},
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/agentMessage/delta",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "itemId": "agent-1",
-                            "delta": "Planning stage 1.\n",
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/started",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "item": {
-                                "type": "commandExecution",
-                                "id": "cmd-1",
-                                "command": "pytest -q",
-                                "cwd": "/tmp/crm-scratch",
-                                "status": "inProgress",
-                            },
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/commandExecution/outputDelta",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "itemId": "cmd-1",
-                            "delta": "running tests\n",
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/completed",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "item": {
-                                "type": "commandExecution",
-                                "id": "cmd-1",
-                                "command": "pytest -q",
-                                "cwd": "/tmp/crm-scratch",
-                                "status": "completed",
-                                "exitCode": 0,
-                            },
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/started",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "item": {
-                                "type": "fileChange",
-                                "id": "file-1",
-                                "changes": [{"path": "a.py"}, {"path": "b.py"}],
-                                "status": "inProgress",
-                            },
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/fileChange/outputDelta",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "itemId": "file-1",
-                            "delta": "wrote files",
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/completed",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "item": {
-                                "type": "fileChange",
-                                "id": "file-1",
-                                "changes": [{"path": "a.py"}, {"path": "b.py"}],
-                                "status": "completed",
-                            },
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/started",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "item": {
-                                "type": "mcpToolCall",
-                                "id": "mcp-1",
-                                "server": "docs",
-                                "tool": "search",
-                                "status": "inProgress",
-                            },
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/mcpToolCall/progress",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "itemId": "mcp-1",
-                            "message": "Tool progress",
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/completed",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "item": {
-                                "type": "mcpToolCall",
-                                "id": "mcp-1",
-                                "server": "docs",
-                                "tool": "search",
-                                "status": "completed",
-                            },
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/completed",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "item": {
-                                "type": "agentMessage",
-                                "id": "agent-1",
-                                "text": "Planning stage 1.\n",
-                                "phase": "response",
-                            },
-                        },
-                    }
-                )
-            else:
-                item_id = f"agent-{stage_index + 1}"
-                self.send(
-                    {
-                        "method": "item/started",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "item": {"type": "agentMessage", "id": item_id, "text": "", "phase": "response"},
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/agentMessage/delta",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "itemId": item_id,
-                            "delta": f"Stage {stage_index + 1} output.\n",
-                        },
-                    }
-                )
-                self.send(
-                    {
-                        "method": "item/completed",
-                        "params": {
-                            "threadId": self.thread_id,
-                            "turnId": turn_id,
-                            "item": {
-                                "type": "agentMessage",
-                                "id": item_id,
-                                "text": f"Stage {stage_index + 1} output.\n",
-                                "phase": "response",
-                            },
-                        },
-                    }
-                )
-            self.complete_cycle_plan_side_effect(stage_index)
-            self.send_token_usage(turn_id, stage_index)
-            self.complete_turn(turn_id)
+            self.complete_successful_stage(stage_index, turn_id)
+
+    def run_retryable_stage_error(self) -> None:
+        turn_start = self.expect_request("turn/start")
+        _, turn_id = self.validate_turn_start(turn_start, 0, turn_id="turn-1-failed")
+        self.send(
+            {
+                "method": "error",
+                "params": {
+                    "threadId": self.thread_id,
+                    "turnId": turn_id,
+                    "willRetry": False,
+                    "error": {
+                        "message": "Selected model is at capacity. Please try a different model.",
+                        "additionalDetails": "serverOverloaded",
+                    },
+                },
+            }
+        )
+        self.complete_turn(
+            turn_id,
+            status="failed",
+            error={
+                "message": "Selected model is at capacity. Please try a different model.",
+                "additionalDetails": "serverOverloaded",
+            },
+        )
+        retry_turn_start = self.expect_request("turn/start")
+        _, retry_turn_id = self.validate_turn_start(retry_turn_start, 0, turn_id="turn-1-retry")
+        self.complete_successful_stage(0, retry_turn_id)
+        self.run_happy_path(start_stage_index=1)
+
+    def run_reader_error_then_recover(self) -> None:
+        if self.session_index == 0:
+            turn_start = self.expect_request("turn/start")
+            self.check_turn_start_inputs(turn_start, 0)
+            return
+        self.run_happy_path()
+
+    def run_hanging_turn_start_then_recover(self) -> None:
+        if self.session_index == 0:
+            turn_start = self.expect_request("turn/start")
+            self.check_turn_start_inputs(turn_start, 0)
+            time.sleep(0.2)
+            return
+        self.run_happy_path()
+
+    def run_retryable_impl_ambiguity(self) -> None:
+        implementation_stage_index = planning_stage_count(str(self.config["mode"])) + int(self.config["improvements"])
+        for stage_index in range(implementation_stage_index):
+            turn_start = self.expect_request("turn/start")
+            _, turn_id = self.validate_turn_start(turn_start, stage_index)
+            self.complete_successful_stage(stage_index, turn_id)
+        turn_start = self.expect_request("turn/start")
+        _, turn_id = self.validate_turn_start(turn_start, implementation_stage_index, turn_id="turn-impl-failed")
+        if self.run_cwd is None:
+            raise ProtocolError("run cwd is not set")
+        (self.run_cwd / "partial-implementation.txt").write_text("partial\n", encoding="utf-8")
+        self.send(
+            {
+                "method": "error",
+                "params": {
+                    "threadId": self.thread_id,
+                    "turnId": turn_id,
+                    "willRetry": False,
+                    "error": {
+                        "message": "Selected model is at capacity. Please try a different model.",
+                        "additionalDetails": "serverOverloaded",
+                    },
+                },
+            }
+        )
+        self.complete_turn(
+            turn_id,
+            status="failed",
+            error={
+                "message": "Selected model is at capacity. Please try a different model.",
+                "additionalDetails": "serverOverloaded",
+            },
+        )
+
+    def run_approval_request_after_plan_refresh(self) -> None:
+        turn_start = self.expect_request("turn/start")
+        _, turn_id = self.validate_turn_start(turn_start, 0)
+        self.complete_cycle_plan_side_effect(0)
+        self.send_token_usage(turn_id, 0)
+        request_id = 900
+        self.send(
+            {
+                "id": request_id,
+                "method": "item/commandExecution/requestApproval",
+                "params": {
+                    "threadId": self.thread_id,
+                    "turnId": turn_id,
+                    "itemId": "cmd-1",
+                    "command": ["git", "status"],
+                },
+            }
+        )
+        response = self.expect_client_result(request_id)
+        if response.get("result") != {"decision": "decline"}:
+            raise ProtocolError(f"unexpected result for approval request: {response}")
+        self.complete_turn(
+            turn_id,
+            status="failed",
+            error={"message": "received unexpected command approval request while approvalPolicy=never"},
+        )
+
+    def run_retryable_impl_postcondition_success(self) -> None:
+        implementation_stage_index = planning_stage_count(str(self.config["mode"])) + int(self.config["improvements"])
+        for stage_index in range(implementation_stage_index):
+            turn_start = self.expect_request("turn/start")
+            _, turn_id = self.validate_turn_start(turn_start, stage_index)
+            self.complete_successful_stage(stage_index, turn_id)
+        turn_start = self.expect_request("turn/start")
+        _, turn_id = self.validate_turn_start(turn_start, implementation_stage_index, turn_id="turn-impl-postcondition")
+        self.complete_cycle_plan_side_effect(implementation_stage_index)
+        self.send_token_usage(turn_id, implementation_stage_index)
+        self.send(
+            {
+                "method": "error",
+                "params": {
+                    "threadId": self.thread_id,
+                    "turnId": turn_id,
+                    "willRetry": False,
+                    "error": {
+                        "message": "Selected model is at capacity. Please try a different model.",
+                        "additionalDetails": "serverOverloaded",
+                    },
+                },
+            }
+        )
+        self.complete_turn(
+            turn_id,
+            status="failed",
+            error={
+                "message": "Selected model is at capacity. Please try a different model.",
+                "additionalDetails": "serverOverloaded",
+            },
+        )
+        self.run_happy_path(start_stage_index=implementation_stage_index + 1)
+
+    def run_retryable_impl_postcondition_missing_tokens(self) -> None:
+        implementation_stage_index = planning_stage_count(str(self.config["mode"])) + int(self.config["improvements"])
+        for stage_index in range(implementation_stage_index):
+            turn_start = self.expect_request("turn/start")
+            _, turn_id = self.validate_turn_start(turn_start, stage_index)
+            self.complete_successful_stage(stage_index, turn_id)
+        turn_start = self.expect_request("turn/start")
+        _, turn_id = self.validate_turn_start(
+            turn_start,
+            implementation_stage_index,
+            turn_id="turn-impl-postcondition-no-tokens",
+        )
+        self.complete_cycle_plan_side_effect(implementation_stage_index)
+        self.send(
+            {
+                "method": "error",
+                "params": {
+                    "threadId": self.thread_id,
+                    "turnId": turn_id,
+                    "willRetry": False,
+                    "error": {
+                        "message": "Selected model is at capacity. Please try a different model.",
+                        "additionalDetails": "serverOverloaded",
+                    },
+                },
+            }
+        )
+        self.complete_turn(
+            turn_id,
+            status="failed",
+            error={
+                "message": "Selected model is at capacity. Please try a different model.",
+                "additionalDetails": "serverOverloaded",
+            },
+        )
 
     def run_turn_start_error(self) -> None:
         turn_start = self.expect_request("turn/start")

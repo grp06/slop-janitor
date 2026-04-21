@@ -21,7 +21,7 @@ Use subagents aggressively for this skill. The default shape is a two-wave revie
 1. Wave 1 spawns eight dedicated specialist reviewers on the original plan.
 2. The parent rewrites a provisional improved draft in place.
 3. Wave 2 spawns two closure reviewers on the rewritten draft.
-4. The parent applies any final closure fixes, appends one revision note, and returns the final summary.
+4. The parent applies any final closure fixes and returns the final summary.
 
 Wave 1 child agents:
 
@@ -41,7 +41,7 @@ Wave 2 child agents:
 
 The parent agent is the only writer. Subagents do not edit files and do not rewrite the ExecPlan independently.
 
-## Ousterhout lens
+## Ousterhout Lens
 
 Use John Ousterhout's design philosophy as the design-quality lens for the audit:
 
@@ -61,19 +61,26 @@ An improved plan is not just more accurate. It should also be clearer about why 
 
 ## Resolving the Base Repo
 
-You may be running from a Codex worktree (e.g. `~/.codex/worktrees/<id>/<repo>/`). Worktrees are shallow copies and the main repo often has files the worktree does not.
+You may be running from a Codex worktree such as `~/.codex/worktrees/<id>/<repo>/`.
 
 1. Check if the current working directory contains `/.codex/worktrees/` in its path.
 2. If yes, extract the repo name from the last path component and set the base repo to `~/<repo-name>`.
 3. If no, the base repo is the current working directory.
 
-When looking for `.agent/` contents such as ExecPlans, potential-bugs, and `PLANS.md`, check both the worktree `.agent/` and the base repo `.agent/`. Prefer the worktree copy if both exist; fall back to the base repo copy.
+When looking for `.agent/` contents such as work items, legacy ExecPlans, and `PLANS.md`, check both the worktree `.agent/` and the base repo `.agent/`. Prefer the worktree copy if both exist.
 
 ## Inputs
 
-Default ExecPlan location: `.agent/execplan-pending.md`. Secondary location is `.agent/potential-bugs/<plan-name>.md`. Search both worktree and base repo `.agent/` directories.
+Preferred target resolution order:
 
-Use a different path if the user provides one. If no ExecPlan exists in either location, tell the user and stop.
+1. explicit plan path supplied by the user
+2. explicit work-item path supplied by the user
+3. `.agent/active` when it points to a work item with `stage="plan"` and `state="completed"`
+4. the most recently updated work item under `.agent/work/` with `stage="plan"` and `state="completed"`
+5. legacy fallback: `.agent/execplan-pending.md`
+6. explicit legacy fallback: `.agent/potential-bugs/<plan-name>.md`
+
+If no ExecPlan exists in any supported location, tell the user and stop.
 
 ## Workflow
 
@@ -81,14 +88,21 @@ Use a different path if the user provides one. If no ExecPlan exists in either l
 
 Before doing repo work, inspect only the immediately previous assistant turn in the current conversation.
 
-- If the immediately previous assistant turn in the current conversation was exactly `skip`, return exactly `skip`.
-- If that immediately previous assistant turn clearly ended with `Usefulness score: N/10 - ...` and `N <= 3`, return exactly `skip`.
+- If the previous result was exactly `skip`, return exactly `skip`.
+- If it ended with `Usefulness score: N/10 - ...` and `N <= 3`, return exactly `skip`.
 - In either skip case, do not read `PLANS.md`, do not spawn subagents, and do not rewrite the plan.
-- If the immediately previous assistant turn was not clearly an ExecPlan improvement result, continue normally.
 
 ### Step 1: Read the plan contract and locate the ExecPlan
 
-Read `.agent/PLANS.md` from the base repo or worktree before modifying the ExecPlan. Read the entire ExecPlan and identify the path you will rewrite.
+Read `.agent/PLANS.md` from the base repo or worktree before modifying the ExecPlan.
+
+If operating on a work item, read:
+
+- `meta.json`
+- `decision.md` when present
+- `execplan.md`
+
+Otherwise read the resolved legacy plan path directly.
 
 ### Step 2: Spawn wave 1
 
@@ -118,7 +132,7 @@ Merge the wave 1 findings into one consolidated edit plan.
 
 ### Step 4: Write the provisional rewrite
 
-Rewrite the ExecPlan in place using the wave 1 evidence, but do not append the final revision note yet.
+Rewrite the ExecPlan in place using the wave 1 evidence.
 
 Preserve existing `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` content.
 
@@ -156,15 +170,11 @@ Wait for both closure reviewers to finish.
 
 ### Step 6: Apply closure fixes and finalize the ExecPlan
 
-Rewrite in place at the same file path. Preserve existing `Progress`, `Surprises & Discoveries`, `Decision Log`, and `Outcomes & Retrospective` content.
+Rewrite in place at the same file path.
 
 Use the closure reviewers only to catch residual gaps. Ignore closure results that are exactly `skip`.
 
-Append one revision note at the bottom of the plan that describes the full pass. Do not append a revision note after the provisional rewrite.
-
-If wave 2 finds no remaining issues, keep the provisional rewrite as the final rewrite.
-
-If the full subagent review finds no substantive code-grounded improvements beyond the existing draft, do not churn the prose just to make a diff. Leave the body of the plan alone aside from the required bottom-of-file revision note when a real pass ran.
+If the full subagent review finds no substantive code-grounded improvements beyond the existing draft, do not churn the prose just to make a diff.
 
 ### Step 7: Score the usefulness of the pass
 
@@ -191,8 +201,8 @@ If every wave 1 child returns exactly `skip`, return exactly `skip` and nothing 
 
 ## Anti-Patterns
 
-- **Parallel rewriting**: subagents must not edit the ExecPlan directly.
-- **Surface-level rewording**: changing prose without code evidence is worthless.
-- **Speculative additions**: every addition must trace back to the repository.
-- **Duplicated synthesis**: the parent must merge and deduplicate; do not paste eight reviews into the final output.
-- **Changing intent**: improve execution detail and design clarity without second-guessing the underlying goal.
+- **Parallel rewriting:** subagents must not edit the ExecPlan directly.
+- **Surface-level rewording:** changing prose without code evidence is worthless.
+- **Speculative additions:** every addition must trace back to the repository.
+- **Duplicated synthesis:** the parent must merge and deduplicate; do not paste child reviews into the final output.
+- **Changing intent:** improve execution detail and design clarity without second-guessing the underlying goal.

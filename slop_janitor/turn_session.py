@@ -35,6 +35,7 @@ class TurnSession:
         self.assistant_order: list[str] = []
         self.token_usage: TokenUsageSummary | None = None
         self.failure_message: str | None = None
+        self.failure_payload: dict[str, Any] | None = None
 
     def handle_notification(self, message: dict[str, Any]) -> TurnResult | None:
         method = message["method"]
@@ -114,6 +115,7 @@ class TurnSession:
                 )
             else:
                 self.failure_message = self._format_turn_error(turn_error)
+                self.failure_payload = turn_error if isinstance(turn_error, dict) else None
             return None
         if method == "turn/completed":
             if params.get("threadId") != self.thread_id:
@@ -189,10 +191,14 @@ class TurnSession:
 
     def _build_turn_result(self, completed_turn: dict[str, Any]) -> TurnResult:
         status = str(completed_turn.get("status", "")).lower()
-        completed_error = self._format_turn_error(completed_turn.get("error"))
+        completed_error_payload = completed_turn.get("error")
+        completed_error = self._format_turn_error(completed_error_payload)
         failure_message = self.failure_message
+        failure_payload = self.failure_payload
         if status != "completed":
             failure_message = completed_error or failure_message
+            if isinstance(completed_error_payload, dict):
+                failure_payload = completed_error_payload
         elif failure_message is not None:
             status = "failed"
         elif self.token_usage is None:
@@ -204,6 +210,7 @@ class TurnSession:
             assistant_text=self._assemble_assistant_text(),
             token_usage=self.token_usage,
             error_message=failure_message,
+            error_payload=failure_payload,
         )
 
     def _describe_item(self, item: dict[str, Any]) -> str:

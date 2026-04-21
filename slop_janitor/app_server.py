@@ -33,6 +33,22 @@ class AppServerError(RuntimeError):
     pass
 
 
+class AppServerRequestError(AppServerError):
+    def __init__(self, *, method: str, code: Any, message: str, data: Any = None) -> None:
+        super().__init__(f"`{method}` failed with JSON-RPC error {code}: {message}")
+        self.method = method
+        self.code = code
+        self.message = message
+        self.data = data
+
+
+class AppServerTimeoutError(AppServerError):
+    def __init__(self, *, operation: str, timeout_seconds: float) -> None:
+        super().__init__(f"{operation} timed out after {timeout_seconds:.1f}s without any app-server activity")
+        self.operation = operation
+        self.timeout_seconds = timeout_seconds
+
+
 class AppServerClient:
     def __init__(self, spawn_spec: AppServerSpawnSpec, run_logger: RunLogger) -> None:
         self.spawn_spec = spawn_spec
@@ -79,7 +95,7 @@ class AppServerClient:
         self._reader_thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._reader_thread.start()
 
-    def initialize(self) -> None:
+    def initialize(self, *, request_timeout_seconds: float | None = None) -> None:
         self._request(
             "initialize",
             {
@@ -90,13 +106,21 @@ class AppServerClient:
                 },
                 "capabilities": {"experimentalApi": True},
             },
+            timeout_seconds=request_timeout_seconds,
         )
         self._send({"method": "initialized"})
 
-    def get_account(self) -> dict[str, Any]:
-        return self._request("account/read", {"refreshToken": False})
+    def get_account(self, *, request_timeout_seconds: float | None = None) -> dict[str, Any]:
+        return self._request("account/read", {"refreshToken": False}, timeout_seconds=request_timeout_seconds)
 
-    def start_thread(self, cwd: str, *, sandbox_mode: str, writable_roots: list[str]) -> str:
+    def start_thread(
+        self,
+        cwd: str,
+        *,
+        sandbox_mode: str,
+        writable_roots: list[str],
+        request_timeout_seconds: float | None = None,
+    ) -> str:
         params: dict[str, Any] = {
             "cwd": cwd,
             "approvalPolicy": "never",
@@ -114,13 +138,21 @@ class AppServerClient:
         result = self._request(
             "thread/start",
             params,
+            timeout_seconds=request_timeout_seconds,
         )
         thread = result.get("thread")
         if not isinstance(thread, dict) or not isinstance(thread.get("id"), str):
             raise AppServerError("thread/start response did not include thread.id")
         return thread["id"]
 
-    def run_turn(self, thread_id: str, stage: Stage) -> TurnResult:
+    def run_turn(
+        self,
+        thread_id: str,
+        stage: Stage,
+        *,
+        idle_timeout_seconds: float | None = None,
+        request_timeout_seconds: float | None = None,
+    ) -> TurnResult:
         result = self._request(
             "turn/start",
             {
@@ -134,6 +166,7 @@ class AppServerClient:
                     },
                 ],
             },
+            timeout_seconds=request_timeout_seconds,
         )
         turn = result.get("turn")
         if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
@@ -141,7 +174,7 @@ class AppServerClient:
         session = TurnSession(thread_id=thread_id, turn_id=turn["id"], run_logger=self.run_logger)
 
         while True:
-            event = self._next_event()
+            event = self._next_event(timeout_seconds=idle_timeout_seconds)
             kind = event["kind"]
             if kind == "reader_error":
                 raise AppServerError(event["message"])
@@ -235,12 +268,18 @@ class AppServerClient:
         self._process.stdin.write("\n")
         self._process.stdin.flush()
 
-    def _request(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    def _request(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
         request_id = self._next_request_id()
         deferred_events: deque[dict[str, Any]] = deque()
         self._send({"method": method, "id": request_id, "params": params})
         while True:
-            event = self._next_event()
+            event = self._next_event(timeout_seconds=timeout_seconds)
             kind = event["kind"]
             if kind == "reader_error":
                 raise AppServerError(event["message"])
@@ -261,15 +300,25 @@ class AppServerClient:
                     code = error.get("code")
                     error_message = error.get("message", "unknown JSON-RPC error")
                     self._restore_deferred_events(deferred_events)
-                    raise AppServerError(f"`{method}` failed with JSON-RPC error {code}: {error_message}")
+                    raise AppServerRequestError(
+                        method=method,
+                        code=code,
+                        message=error_message,
+                        data=error.get("data"),
+                    )
                 deferred_events.append(event)
                 continue
             deferred_events.append(event)
 
-    def _next_event(self) -> dict[str, Any]:
+    def _next_event(self, *, timeout_seconds: float | None = None) -> dict[str, Any]:
         if self._pending_events:
             return self._pending_events.popleft()
-        return self._queue.get()
+        try:
+            if timeout_seconds is None:
+                return self._queue.get()
+            return self._queue.get(timeout=timeout_seconds)
+        except queue.Empty as exc:
+            raise AppServerTimeoutError(operation="turn/run", timeout_seconds=timeout_seconds) from exc
 
     def _restore_deferred_events(self, deferred_events: deque[dict[str, Any]]) -> None:
         while deferred_events:

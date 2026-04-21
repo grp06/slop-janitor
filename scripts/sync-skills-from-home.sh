@@ -6,10 +6,11 @@ source_root="${HOME}/.agents/skills"
 dest_root="${repo_root}/.agents/skills"
 
 skills=(
+  find-refactor-candidates
+  select-refactor
   execplan-create
   execplan-improve
   execplan-improve-subagents
-  find-best-refactor
   implement-execplan
   review-recent-work
   review-recent-work-subagents

@@ -35,11 +35,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 FAKE_APP_SERVER = REPO_ROOT / "tests" / "fixtures" / "fake_app_server.py"
 FAKE_CODEX_CLI = REPO_ROOT / "tests" / "fixtures" / "fake_codex_cli.py"
 PROMPT = "help me build a CRM"
-REFACTOR_STAGE_SUFFIX = (
-    "\n\nThis stage is planning only. Do not implement the refactor or modify repository code in this stage. "
-    "Write the chosen implementation-ready ExecPlan to .agent/execplan-pending.md in the current working "
-    "repository, then stop."
-)
+DEFAULT_REFACTOR_PROMPT = "identify the top materially different refactor candidates in this repository"
 
 
 @contextlib.contextmanager
@@ -141,10 +137,10 @@ class CliTests(unittest.TestCase):
         mode = "pipeline"
         prompt: str | None = PROMPT
         cycles = 1
-        improvements = 4
-        review = 5
-        improve_skill = "execplan-improve-subagents"
-        review_skill = "review-recent-work-subagents"
+        improvements = 1
+        review = 1
+        improve_skill = "execplan-improve"
+        review_skill = "review-recent-work"
         index = 0
         while index < len(cli_argv):
             token = cli_argv[index]
@@ -395,7 +391,8 @@ class CliTests(unittest.TestCase):
             maybe_commit_for_stage(
                 auto_commit,
                 run_logger,
-                mock.Mock(label="find-best-refactor", skill_name="find-best-refactor"),
+                mock.Mock(label="find-refactor-candidates", skill_name="find-refactor-candidates"),
+                mode="refactor",
                 stage_index=1,
                 improvement_count=1,
                 review_count=1,
@@ -415,7 +412,8 @@ class CliTests(unittest.TestCase):
                 auto_commit,
                 run_logger,
                 mock.Mock(label="execplan-improve-subagents-1", skill_name="execplan-improve-subagents"),
-                stage_index=2,
+                mode="refactor",
+                stage_index=4,
                 improvement_count=1,
                 review_count=1,
             )
@@ -425,7 +423,8 @@ class CliTests(unittest.TestCase):
                 auto_commit,
                 run_logger,
                 mock.Mock(label="implement-execplan", skill_name="implement-execplan"),
-                stage_index=3,
+                mode="refactor",
+                stage_index=5,
                 improvement_count=1,
                 review_count=1,
             )
@@ -438,7 +437,8 @@ class CliTests(unittest.TestCase):
                     label="review-recent-work-subagents-1",
                     skill_name="review-recent-work-subagents",
                 ),
-                stage_index=4,
+                mode="refactor",
+                stage_index=6,
                 improvement_count=1,
                 review_count=1,
             )
@@ -484,7 +484,8 @@ class CliTests(unittest.TestCase):
                     label="cycle-1-review-recent-work-subagents-1",
                     skill_name="review-recent-work-subagents",
                 ),
-                stage_index=3,
+                mode="refactor",
+                stage_index=5,
                 improvement_count=0,
                 review_count=2,
             )
@@ -521,7 +522,8 @@ class CliTests(unittest.TestCase):
                     label="cycle-1-review-recent-work-subagents-2",
                     skill_name="review-recent-work-subagents",
                 ),
-                stage_index=5,
+                mode="refactor",
+                stage_index=6,
                 improvement_count=0,
                 review_count=2,
             )
@@ -561,7 +563,8 @@ class CliTests(unittest.TestCase):
                     label="cycle-1-review-recent-work-2",
                     skill_name="review-recent-work",
                 ),
-                stage_index=5,
+                mode="refactor",
+                stage_index=6,
                 improvement_count=0,
                 review_count=2,
             )
@@ -740,6 +743,7 @@ class CliTests(unittest.TestCase):
                 auto_commit,
                 run_logger,
                 mock.Mock(label="execplan-create", skill_name="execplan-create"),
+                mode="pipeline",
                 stage_index=1,
                 improvement_count=0,
                 review_count=0,
@@ -818,8 +822,9 @@ class CliTests(unittest.TestCase):
             maybe_commit_for_stages(
                 auto_commits,
                 run_logger,
-                mock.Mock(label="find-best-refactor", skill_name="find-best-refactor"),
-                stage_index=1,
+                mock.Mock(label="execplan-create", skill_name="execplan-create"),
+                mode="refactor",
+                stage_index=3,
                 improvement_count=0,
                 review_count=0,
             )
@@ -830,7 +835,8 @@ class CliTests(unittest.TestCase):
                 auto_commits,
                 run_logger,
                 mock.Mock(label="implement-execplan", skill_name="implement-execplan"),
-                stage_index=6,
+                mode="refactor",
+                stage_index=8,
                 improvement_count=4,
                 review_count=0,
             )
@@ -855,7 +861,7 @@ class CliTests(unittest.TestCase):
                 [
                     "slop-janitor: final checkpoint",
                     "slop-janitor: after implement-execplan",
-                    "slop-janitor: after find-best-refactor",
+                    "slop-janitor: after execplan-create",
                     "initial",
                 ],
             )
@@ -900,8 +906,8 @@ class CliTests(unittest.TestCase):
             capture_output=True,
             text=True,
         ).stdout.strip().splitlines()
-        self.assertIn("slop-janitor: after cycle-1-review-recent-work-subagents-1", history)
-        self.assertIn("slop-janitor: after cycle-2-review-recent-work-subagents-1", history)
+        self.assertIn("slop-janitor: after cycle-1-review-recent-work-1", history)
+        self.assertIn("slop-janitor: after cycle-2-review-recent-work-1", history)
 
     def test_non_subagent_review_stage_changes_in_linked_repo_are_checkpointed_before_next_cycle(self) -> None:
         tempdir = tempfile.TemporaryDirectory()
@@ -946,7 +952,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("slop-janitor: after cycle-1-review-recent-work-1", history)
         self.assertIn("slop-janitor: after cycle-2-review-recent-work-1", history)
 
-    def test_refactor_mode_runs_find_best_refactor_with_prompt(self) -> None:
+    def test_refactor_mode_runs_candidate_selection_flow_with_prompt(self) -> None:
         exit_code, stdout, stderr, record_path = self.run_pipeline(
             "refactor_with_prompt",
             argv=["--mode", "refactor", "--prompt", PROMPT],
@@ -959,21 +965,25 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
-        self.assertEqual(len(turn_starts), 11)
-        self.assertNotIn("=== Stage 1/11: find-best-refactor ===", stdout)
+        self.assertEqual(len(turn_starts), 6)
+        self.assertNotIn("=== Stage 1/6: find-refactor-candidates ===", stdout)
         self.assertIn("========== Workflow Cycle 1/1 ==========", stdout)
-        self.assertIn("--- Refactor Planning ---", stdout)
-        self.assertIn("Stage 1/11 · find-best-refactor", stdout)
-        self.assertIn("=== Stage 1/11: find-best-refactor ===", log_text)
-        self.assertIn("=== Stage 11/11: review-recent-work-subagents-5 ===", log_text)
+        self.assertIn("--- Refactor Discovery ---", stdout)
+        self.assertIn("Stage 1/6 · find-refactor-candidates", stdout)
+        self.assertIn("=== Stage 1/6: find-refactor-candidates ===", log_text)
+        self.assertIn("=== Stage 6/6: review-recent-work-1 ===", log_text)
         text_input = turn_starts[0]["params"]["input"][0]
         skill_input = turn_starts[0]["params"]["input"][1]
-        self.assertEqual(text_input["text"], f"$find-best-refactor {PROMPT}{REFACTOR_STAGE_SUFFIX}")
-        self.assertEqual(skill_input["name"], "find-best-refactor")
-        self.assertTrue(skill_input["path"].endswith("/find-best-refactor/SKILL.md"))
+        self.assertEqual(text_input["text"], f"$find-refactor-candidates {PROMPT}")
+        self.assertEqual(skill_input["name"], "find-refactor-candidates")
+        self.assertTrue(skill_input["path"].endswith("/find-refactor-candidates/SKILL.md"))
         self.assertEqual(
             turn_starts[1]["params"]["input"][0]["text"],
-            "$execplan-improve-subagents improve the pending execution plan at .agent/execplan-pending.md",
+            "$select-refactor pressure-test the active shortlist, lock the best refactor decision, and stop before planning.",
+        )
+        self.assertEqual(
+            turn_starts[3]["params"]["input"][0]["text"],
+            "$execplan-improve improve the active work-item ExecPlan and rewrite it in place",
         )
 
     def test_refactor_mode_allows_selecting_non_subagent_follow_up_skills(self) -> None:
@@ -1002,15 +1012,15 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
-        self.assertIn("=== Stage 2/4: execplan-improve-1 ===", log_text)
-        self.assertIn("=== Stage 4/4: review-recent-work-1 ===", log_text)
-        self.assertEqual(
-            turn_starts[1]["params"]["input"][0]["text"],
-            "$execplan-improve improve the pending execution plan at .agent/execplan-pending.md",
-        )
+        self.assertIn("=== Stage 4/6: execplan-improve-1 ===", log_text)
+        self.assertIn("=== Stage 6/6: review-recent-work-1 ===", log_text)
         self.assertEqual(
             turn_starts[3]["params"]["input"][0]["text"],
-            "$review-recent-work review the most recently implemented ExecPlan work",
+            "$execplan-improve improve the active work-item ExecPlan and rewrite it in place",
+        )
+        self.assertEqual(
+            turn_starts[5]["params"]["input"][0]["text"],
+            "$review-recent-work review the most recently implemented work-item ExecPlan",
         )
 
     def test_refactor_mode_allows_missing_prompt(self) -> None:
@@ -1026,12 +1036,11 @@ class CliTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 0)
         self.assertEqual(stderr, "")
-        self.assertNotIn("=== Stage 1/11: find-best-refactor ===", stdout)
-        self.assertIn("=== Stage 1/11: find-best-refactor ===", log_text)
+        self.assertNotIn("=== Stage 1/6: find-refactor-candidates ===", stdout)
+        self.assertIn("=== Stage 1/6: find-refactor-candidates ===", log_text)
         self.assertEqual(
             turn_start["params"]["input"][0]["text"],
-            "$find-best-refactor find the single highest-leverage refactor in this repository"
-            f"{REFACTOR_STAGE_SUFFIX}",
+            f"$find-refactor-candidates {DEFAULT_REFACTOR_PROMPT}",
         )
 
     def test_custom_cycles_improvements_and_review_counts(self) -> None:
@@ -1062,15 +1071,15 @@ class CliTests(unittest.TestCase):
         self.assertIn("--- Improvement Pass 1/2 ---", stdout)
         self.assertIn("--- Review Pass 1/1 ---", stdout)
         self.assertIn("=== Stage 1/10: cycle-1-execplan-create ===", log_text)
-        self.assertIn("=== Stage 10/10: cycle-2-review-recent-work-subagents-1 ===", log_text)
+        self.assertIn("=== Stage 10/10: cycle-2-review-recent-work-1 ===", log_text)
         self.assertEqual(turn_starts[0]["params"]["input"][0]["text"], f"$execplan-create {PROMPT}")
         self.assertEqual(
             turn_starts[1]["params"]["input"][0]["text"],
-            "$execplan-improve-subagents improve the pending execution plan at .agent/execplan-pending.md",
+            "$execplan-improve improve the active work-item ExecPlan and rewrite it in place",
         )
         self.assertEqual(
             turn_starts[4]["params"]["input"][0]["text"],
-            "$review-recent-work-subagents review the most recently implemented ExecPlan work",
+            "$review-recent-work review the most recently implemented work-item ExecPlan",
         )
         self.assertEqual(
             turn_starts[5]["params"]["input"][0]["text"],
@@ -1124,10 +1133,10 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("[fileChange] wrote files", stdout)
         self.assertNotIn("[mcp] Tool progress", stdout)
         self.assertNotIn("[started]", stdout)
-        self.assertNotIn("=== Stage 1/11", stdout)
+        self.assertNotIn("=== Stage 1/4", stdout)
         self.assertIn("Tokens this turn: total=100 input=10 cached=1 output=20 reasoning=5", stdout)
-        self.assertIn("Tokens cumulative: total=1100 input=110 cached=11 output=220 reasoning=55", stdout)
-        self.assertIn("=== Stage 1/11: execplan-create ===", log_text)
+        self.assertIn("Tokens cumulative: total=400 input=40 cached=4 output=80 reasoning=20", stdout)
+        self.assertIn("=== Stage 1/4: execplan-create ===", log_text)
         self.assertIn("running tests", log_text)
         self.assertIn("[fileChange] wrote files", log_text)
         self.assertIn("[mcp] Tool progress", log_text)
@@ -1143,7 +1152,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 0)
         self.assertEqual(methods[:4], ["initialize", "initialized", "account/read", "thread/start"])
         self.assertEqual(methods.count("thread/start"), 1)
-        self.assertEqual(methods.count("turn/start"), 11)
+        self.assertEqual(methods.count("turn/start"), 4)
         initialize = next(message for message in inbound if message.get("method") == "initialize")
         self.assertTrue(initialize["params"]["capabilities"]["experimentalApi"])
 
@@ -1267,6 +1276,97 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("turn/start` failed with JSON-RPC error 4100", stderr)
 
+    def test_retryable_stage_error_retries_same_thread_and_succeeds(self) -> None:
+        exit_code, _, stderr, record_path = self.run_pipeline(
+            "retryable_stage_error",
+            argv=["--prompt", PROMPT, "--retry-initial-delay-seconds", "0.01", "--retry-max-delay-seconds", "0.01"],
+        )
+        record = self.read_json(record_path)
+        _, log_text = self.read_run_log(record_path)
+        inbound = self.inbound_messages(record)
+        methods = [message.get("method") for message in inbound if "method" in message]
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("retrying stage `execplan-create`", stderr)
+        self.assertEqual(methods.count("thread/start"), 1)
+        self.assertEqual(methods.count("turn/start"), 5)
+        self.assertIn("[retry] waiting 0.0 second(s) before attempt 2", log_text)
+
+    def test_reader_error_restarts_app_server_and_recovers(self) -> None:
+        exit_code, _, stderr, record_path = self.run_pipeline(
+            "reader_error_then_recover",
+            argv=["--prompt", PROMPT, "--retry-initial-delay-seconds", "0.01", "--retry-max-delay-seconds", "0.01"],
+        )
+        record = self.read_json(record_path)
+        inbound = self.inbound_messages(record)
+        methods = [message.get("method") for message in inbound if "method" in message]
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("restarting Codex app-server", stderr)
+        self.assertGreaterEqual(methods.count("initialize"), 2)
+        self.assertGreaterEqual(methods.count("thread/start"), 2)
+
+    def test_hanging_turn_start_times_out_and_recovers(self) -> None:
+        exit_code, _, stderr, record_path = self.run_pipeline(
+            "hanging_turn_start_then_recover",
+            argv=[
+                "--prompt",
+                PROMPT,
+                "--stage-idle-timeout-seconds",
+                "0.05",
+                "--retry-initial-delay-seconds",
+                "0.01",
+                "--retry-max-delay-seconds",
+                "0.01",
+            ],
+        )
+        record = self.read_json(record_path)
+        inbound = self.inbound_messages(record)
+        methods = [message.get("method") for message in inbound if "method" in message]
+
+        self.assertEqual(exit_code, 0)
+        self.assertIn("turn/run timed out after 0.1s", stderr)
+        self.assertGreaterEqual(methods.count("initialize"), 2)
+        self.assertGreaterEqual(methods.count("thread/start"), 2)
+
+    def test_terminal_failure_does_not_use_postcondition_recovery(self) -> None:
+        exit_code, _, stderr, record_path = self.run_pipeline(
+            "approval_request_after_plan_refresh",
+            argv=["--prompt", PROMPT],
+        )
+        record = self.read_json(record_path)
+        turn_starts = [
+            message for message in self.inbound_messages(record) if message.get("method") == "turn/start"
+        ]
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(len(turn_starts), 1)
+        self.assertIn("unexpected command approval request", stderr)
+
+    def test_retryable_postcondition_recovery_requires_token_usage(self) -> None:
+        exit_code, _, stderr, _ = self.run_pipeline(
+            "retryable_impl_postcondition_missing_tokens",
+            argv=["--prompt", PROMPT],
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("satisfied recovery postconditions but did not report token usage", stderr)
+
+    def test_retryable_postcondition_recovery_can_continue_with_token_usage(self) -> None:
+        exit_code, stdout, stderr, record_path = self.run_pipeline(
+            "retryable_impl_postcondition_success",
+            argv=["--prompt", PROMPT],
+        )
+        record = self.read_json(record_path)
+        turn_starts = [
+            message for message in self.inbound_messages(record) if message.get("method") == "turn/start"
+        ]
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(len(turn_starts), 4)
+        self.assertIn("continuing after transient failure in stage `implement-execplan`", stdout)
+
     def test_fake_server_spawn_override_drives_cli_path(self) -> None:
         server_cwd = Path(tempfile.mkdtemp())
         self.addCleanup(lambda: shutil.rmtree(server_cwd, ignore_errors=True))
@@ -1310,14 +1410,15 @@ class CliTests(unittest.TestCase):
             review_skill_name="review-recent-work-subagents",
         )
 
-        self.assertEqual(len(stages), 11)
-        self.assertEqual(stages[0].label, "find-best-refactor")
+        self.assertEqual(len(stages), 13)
+        self.assertEqual(stages[0].label, "find-refactor-candidates")
         self.assertEqual(
             stages[0].text,
-            "$find-best-refactor find the single highest-leverage refactor in this repository"
-            f"{REFACTOR_STAGE_SUFFIX}",
+            f"$find-refactor-candidates {DEFAULT_REFACTOR_PROMPT}",
         )
-        self.assertEqual(stages[1].label, "execplan-improve-subagents-1")
+        self.assertEqual(stages[1].label, "select-refactor")
+        self.assertEqual(stages[2].label, "execplan-create")
+        self.assertEqual(stages[3].label, "execplan-improve-subagents-1")
 
     def test_build_refactor_stage_forbids_implementation_during_planning_stage(self) -> None:
         stages = build_refactor_stages(
@@ -1329,9 +1430,15 @@ class CliTests(unittest.TestCase):
             review_skill_name="review-recent-work-subagents",
         )
 
-        self.assertIn("This stage is planning only.", stages[0].text)
-        self.assertIn("Do not implement the refactor or modify repository code", stages[0].text)
-        self.assertIn(".agent/execplan-pending.md", stages[0].text)
+        self.assertEqual(stages[0].text, f"$find-refactor-candidates {PROMPT}")
+        self.assertEqual(
+            stages[1].text,
+            "$select-refactor pressure-test the active shortlist, lock the best refactor decision, and stop before planning.",
+        )
+        self.assertEqual(
+            stages[2].text,
+            "$execplan-create create an ExecPlan for the active refactor work item and write it into that work item",
+        )
 
     def test_build_stages_respects_custom_counts(self) -> None:
         stages = build_stages(
@@ -1393,6 +1500,27 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertEqual(len(turn_starts), 1)
         self.assertIn("stage failed", stderr)
+
+    def test_retryable_failure_with_workspace_changes_stops_as_ambiguous(self) -> None:
+        target_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(target_dir, ignore_errors=True))
+        self.init_git_repo(target_dir)
+
+        exit_code, _, stderr, record_path = self.run_pipeline(
+            "retryable_impl_ambiguity",
+            argv=["--prompt", PROMPT, "--retry-initial-delay-seconds", "0.01", "--retry-max-delay-seconds", "0.01"],
+            target_cwd=target_dir,
+        )
+        record = self.read_json(record_path)
+        turn_starts = [
+            message
+            for message in self.inbound_messages(record)
+            if message.get("method") == "turn/start"
+        ]
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(len(turn_starts), 3)
+        self.assertIn("left workspace changes that make replay unsafe", stderr)
 
 
 if __name__ == "__main__":
