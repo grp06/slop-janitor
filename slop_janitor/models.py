@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
+
+
+@dataclass(frozen=True)
+class AutoCommitState:
+    enabled: bool
+    repo_root: Path
+    excluded_relative_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

@@ -18,7 +18,8 @@ Supported inputs, in priority order:
 2. explicit `decision.md` path
 3. `.agent/active` when it points at a work item with `stage="decision"` and `state="completed"`
 4. the most recently updated work item under `.agent/work/` with `stage="decision"` and `state="completed"`
-5. a user-supplied PRD, RFC, voice note, or detailed problem statement
+5. the active slice from `.agent/meta-plans/active`
+6. a user-supplied PRD, RFC, voice note, or detailed problem statement
 
 If using a decided work item, do not silently reopen candidate search unless the decision artifact is clearly incomplete.
 
@@ -81,6 +82,22 @@ If operating on a decided work item:
 - read `meta.json`
 - read `decision.md`
 
+If operating from an active meta-plan slice instead:
+
+- read `.agent/meta-plans/active`
+- read the parent `meta.json`
+- read `brief.md`
+- read `slices.json`
+- select the `active` slice, or the first `ready` slice if none is `active`
+- create a new child work-item directory under `.agent/work/`
+- initialize child `meta.json`
+- write a child `decision.md` derived from the selected slice plus the parent brief
+- include back-link metadata in the child `meta.json`:
+  - `meta_plan_id`
+  - `meta_plan_slice_id`
+- record the child work-item id/path onto the selected slice in `slices.json`
+- update `.agent/active` to point at the child work item
+
 If operating from a raw user brief instead:
 
 - create or reuse a work-item directory under `.agent/work/`
@@ -106,6 +123,7 @@ Write the ExecPlan to:
 The plan should:
 
 - preserve the hard constraints from `decision.md`
+- preserve the hard constraints from the parent `brief.md` when planning from a meta-plan
 - name the exact files and boundaries involved
 - explain the current pain
 - describe the intended complexity dividend
@@ -120,9 +138,13 @@ If using a work item, update `meta.json`:
 - `artifacts.execplan="execplan.md"`
 - `updated_at=<now>`
 
+If the child work item came from a meta-plan slice, do not update the parent
+slice status here. Parent reconciliation belongs after implementation/review.
+
 ## Anti-Patterns
 
 - reopening candidate search during planning without strong evidence
+- reopening the whole parent meta-plan instead of planning the selected active slice
 - writing a mechanically correct plan that preserves the same complexity under new names
 - proposing thin wrappers or pass-through modules unless they clearly hide detail
 - leaving key design choices to the implementer when the repo evidence is already strong

@@ -15,7 +15,16 @@ Using Codex well usually means manually queuing a long chain of follow-up messag
 - ask it to implement the plan
 - ask it to review the result
 
-`slop-janitor` runs that loop for you on one thread.
+`slop-janitor janitor` runs that loop for you on one thread.
+
+`slop-janitor builder` is for bigger feature work. It turns an explicit project
+brief into a parent Meta Exec Plan, then executes each slice through the normal
+ExecPlan loop.
+
+`slop-janitor goals run` is for a simpler goal-plan workflow. You chat freely
+with Codex, invoke `create-goals` to write `.agent/goals/<id-slug>/` and point
+`.agent/goals/active` at it, approve or edit that plan, then let `slop-janitor`
+execute the ordered goals one at a time through Codex's thread goal API.
 
 It follows the `PLANS.md` pattern from OpenAI's Codex exec plans guide: plan, improve the plan, implement, and review. That is the basic trick for keeping an agent on the same problem for a long time instead of resetting every turn. Background: [Codex Exec Plans](https://developers.openai.com/cookbook/articles/codex_exec_plans).
 
@@ -23,7 +32,7 @@ This tool uses the account you sign into Codex with for inference and token usag
 
 It also writes a complete run log, so the session is inspectable after the fact rather than something that only existed in the terminal.
 
-By default, one cycle is:
+By default, one janitor cycle is:
 
 1. `find-refactor-candidates`
 2. `select-refactor`
@@ -32,21 +41,23 @@ By default, one cycle is:
 5. `implement-execplan`
 6. `review-recent-work`
 
-You can change the number of full cycles, improvement passes, and review passes.
-You can also swap the follow-up skills with `--improve-skill` and `--review-skill`.
+You can change the number of janitor cycles, improvement passes, and review
+passes. The follow-up skills are intentionally fixed to `execplan-improve` and
+`review-recent-work`.
 
 ## Bundled Skills
 
 The loop is built from a small set of repo-local skills in `.agents/skills`:
 
+- `create-meta-plan`: creates a parent Meta Exec Plan under `.agent/meta-plans/` for builder mode.
+- `create-goals`: creates a sequential goal plan under `.agent/goals/` for goal mode.
+- `complete-goals`: launches the approved active goal plan through `slop-janitor goals run`.
 - `find-refactor-candidates`: searches the repo from first principles and writes a candidate shortlist into a work item.
 - `select-refactor`: pressure-tests that shortlist and locks the winning refactor before planning starts.
 - `execplan-create`: turns a locked refactor decision into an ExecPlan.
 - `execplan-improve`: rewrites that plan with code-grounded corrections and missing details.
 - `implement-execplan`: executes the active work-item ExecPlan while updating work-item state.
 - `review-recent-work`: reviews the most recently implemented ExecPlan work and fixes obvious issues immediately.
-
-Optional subagent variants for plan improvement and review are still bundled, but they are now follow-up choices rather than the default path.
 
 ## Prerequisites
 
@@ -95,6 +106,13 @@ cd /path/to/target-repo
 /path/to/slop-janitor/slop-janitor
 ```
 
+The no-subcommand form is kept as shorthand for `janitor`:
+
+```bash
+cd /path/to/target-repo
+/path/to/slop-janitor/slop-janitor janitor
+```
+
 Add guidance if you want to steer the refactor:
 
 ```bash
@@ -109,11 +127,28 @@ cd /path/to/target-repo
 /path/to/slop-janitor/slop-janitor --prompt "focus on testability and simplifying boundaries" --cycles 2 --improvements 5 --review 3
 ```
 
-Use the subagent follow-up skills instead:
+Use builder mode for a larger project with explicit direction:
 
 ```bash
 cd /path/to/target-repo
-/path/to/slop-janitor/slop-janitor --improvements 3 --improve-skill execplan-improve-subagents --review 2 --review-skill review-recent-work-subagents
+/path/to/slop-janitor/slop-janitor builder --prompt "build the new project workflow" --slices 5
+```
+
+Use an existing Meta Exec Plan:
+
+```bash
+cd /path/to/target-repo
+/path/to/slop-janitor/slop-janitor builder --meta-plan .agent/meta-plans/my-project-plan
+```
+
+Use goal mode after creating and approving a goal plan:
+
+```bash
+cd /path/to/target-repo
+# In chat: invoke create-goals, review .agent/goals/<id-slug>/, then approve it.
+/path/to/slop-janitor/slop-janitor goals run
+# Or run a specific plan explicitly:
+/path/to/slop-janitor/slop-janitor goals run .agent/goals/<id-slug>
 ```
 
 Make sibling repos writable and auto-managed explicitly when one run needs to touch both:
@@ -123,32 +158,44 @@ cd /path/to/openclaw-cloud
 /path/to/slop-janitor/slop-janitor --linked-repo /path/to/openclaw-studio-private
 ```
 
-If you really want Codex to run without filesystem sandboxing, opt in explicitly:
+If you want to restrict Codex to writable managed repo roots, opt in explicitly:
 
 ```bash
 cd /path/to/target-repo
-/path/to/slop-janitor/slop-janitor --prompt "focus on testability and simplifying boundaries" --sandbox danger-full-access
+/path/to/slop-janitor/slop-janitor --prompt "focus on testability and simplifying boundaries" --sandbox workspace-write
 ```
 
 `slop-janitor` always targets the directory you launch it from, not the `slop-janitor` repository.
 
 ## Counts And Options
 
-`--prompt` is optional. If you omit it, stage 1 asks for materially different refactor candidates in the current repository.
+`janitor` mode finds and executes one refactor loop. `builder` mode either
+creates a parent Meta Exec Plan or executes an existing one.
 
-`--cycles` controls how many times the full loop runs.
+`--prompt` is optional in janitor mode. If you omit it, stage 1 asks for materially different refactor candidates in the current repository.
+
+`--prompt` is required in builder mode only when creating a new Meta Exec Plan.
+
+`--slices` is required in builder mode only when creating a new Meta Exec Plan. It controls how many slices are created and attempted in the run.
+
+`--meta-plan PATH` runs an existing active Meta Exec Plan instead of creating a new one. The path may point to `.agent/meta-plans/<id>/` or `.agent/meta-plans/active`; it cannot be combined with `--prompt` or `--slices`.
+
+`goals run [PATH]` runs an existing active goal plan under `.agent/goals/<id>/`.
+If `PATH` is omitted, it uses `.agent/goals/active`. The plan must contain
+`brief.md`, `goals.json`, and `ledger.jsonl`. Each goal is loaded from
+`goals.json`, installed into the Codex thread with `thread/goal/set`, executed,
+observed with `thread/goal/get`, persisted back to the plan, and checkpointed
+before the next goal starts.
+
+`--cycles` controls how many times the janitor loop runs.
 
 `--improvements` controls how many plan-improvement turns run inside each cycle.
 
 `--review` controls how many review turns run inside each cycle.
 
-`--improve-skill` selects the planning-improvement skill for each improvement pass. Choices are `execplan-improve-subagents` and `execplan-improve`.
-
-`--review-skill` selects the review skill for each review pass. Choices are `review-recent-work-subagents` and `review-recent-work`.
-
 `--linked-repo /abs/path` adds another git repo to the managed run scope. Repeat it for more repos. These repos are checked for cleanliness, included in checkpoint commits, and added to the writable sandbox roots.
 
-`--sandbox` controls the Codex filesystem sandbox. Choices are `workspace-write` and `danger-full-access`. The default is `workspace-write`.
+`--sandbox` controls the Codex filesystem sandbox. Choices are `workspace-write` and `danger-full-access`. The default is `danger-full-access`.
 
 `--stage-idle-timeout-seconds` controls how long a stage may go without any app-server activity before `slop-janitor` treats it as stuck and restarts recovery. The default is `900`.
 
@@ -160,16 +207,14 @@ Defaults:
 
 - `--cycles 1`
 - `--improvements 1`
-- `--improve-skill execplan-improve`
 - `--review 1`
-- `--review-skill review-recent-work`
-- `--sandbox workspace-write`
+- `--sandbox danger-full-access`
 - `--stage-idle-timeout-seconds 900`
 - `--max-stage-retries 6`
 - `--retry-initial-delay-seconds 15`
 - `--retry-max-delay-seconds 300`
 
-When `--cycles` is greater than 1, stage labels in the run log are cycle-qualified, for example `cycle-2-execplan-create`.
+When `--cycles` is greater than 1, janitor stage labels in the run log are cycle-qualified, for example `cycle-2-execplan-create`. Builder stage labels are slice-qualified, for example `slice-2-execplan-create`.
 
 Prompt path detection is still supported as a convenience for linked repos, but explicit `--linked-repo` flags are the durable interface and avoid punctuation/parsing ambiguity.
 
@@ -186,6 +231,8 @@ Examples:
 
 ```bash
 ./slop-janitor --codex-workspace /path/to/codex/codex-rs --prompt "focus on testability and simplifying boundaries"
+./slop-janitor builder --codex-workspace /path/to/codex/codex-rs --prompt "build the new project workflow" --slices 5
+./slop-janitor builder --codex-workspace /path/to/codex/codex-rs --meta-plan .agent/meta-plans/my-project-plan
 ./slop-janitor auth --codex-workspace /path/to/codex/codex-rs login
 ```
 
@@ -198,9 +245,13 @@ Before stage 1, the client performs:
 3. `account/read`
 4. `thread/start`
 
+Goal mode additionally uses the experimental app-server methods
+`thread/goal/set`, `thread/goal/get`, and `thread/goal/clear` directly. It does
+not send `/goal` slash commands.
+
 If `account/read` says OpenAI auth is required and no account is logged in, the command fails immediately and tells you to run `./slop-janitor auth login`.
 
-After that, every stage in a cycle runs as a `turn/start` on the same thread. That is what gives the workflow continuity. The selection, planning, implementation, and review stages all see the same active work item and the same thread history for that cycle.
+After that, every janitor stage in a cycle runs as a `turn/start` on the same thread. Builder creates the parent Meta Exec Plan on one thread, then starts a fresh thread for each slice so each child ExecPlan relies on durable artifacts instead of long conversational context.
 
 ## Output Model
 
@@ -229,10 +280,10 @@ This split is deliberate. The terminal stays readable while the log remains comp
 
 - `slop-janitor` requires a clean starting state in the primary repo and every linked repo it auto-manages. If any of them have pre-existing changes, it exits before stage 1 and tells you to commit, stash, or discard them first.
 - Model settings are inherited from your current Codex config. `slop-janitor` overrides the thread `cwd`, forces `approvalPolicy: "never"`, and applies the selected sandbox mode for the whole run.
-- In the default `workspace-write` sandbox, `slop-janitor` makes every managed repo root writable, not just the launch directory. The run log records the exact writable roots before stage 1.
+- In the default `danger-full-access` sandbox, Codex runs without filesystem sandboxing. If you pass `--sandbox workspace-write`, `slop-janitor` makes every managed repo root writable, not just the launch directory, and records the exact writable roots before stage 1.
 - The thread uses `approvalPolicy: "never"`.
 - Auto-managed repos that start clean are required to stay clean at stage boundaries, except for the workflow artifacts under `.agent/` in the primary repo while candidate selection, planning, or implementation is in progress.
-- Auto-managed repos are checkpointed after the final planning pass in a cycle, after `implement-execplan`, and after the final review pass in a cycle when those stages leave code changes behind.
+- Auto-managed repos are checkpointed after the final planning pass, after `implement-execplan`, and after the final review pass when those stages leave code changes behind. Builder also checkpoints after `create-meta-plan` when it creates a new parent plan.
 - Transient model-capacity failures such as `serverOverloaded` are retried automatically with capped exponential backoff.
 - If a stage stops producing app-server activity, or the app-server process dies mid-stage, `slop-janitor` restarts the app-server and retries the current stage on a fresh thread.
 - Before replaying a failed stage, `slop-janitor` compares the current workspace against a stage-start snapshot. If the stage appears to have partially changed repo state without satisfying a strong postcondition, the run stops instead of retrying blindly.

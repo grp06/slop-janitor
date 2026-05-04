@@ -1,10 +1,10 @@
 ---
 name: review-recent-work
 description: >-
-  Review the code changes from the most recently implemented ExecPlan with fresh eyes,
-  fix obvious bugs and rough edges immediately, rerun verification, and report how useful
-  the review pass was on a 1-10 scale. Use when you want a post-implementation review of
-  the latest ExecPlan work instead of a generic "continue" response.
+  Review the latest implemented work item or completed ExecPlan with fresh eyes,
+  fix obvious issues immediately, rerun verification, and record the result.
+  Prefer the new `.agent/work/` workflow, but preserve backward-compatible
+  support for older `.agent/done/` ExecPlans.
 ---
 
 # Review Recent Work
@@ -81,6 +81,18 @@ If operating on a work item, read:
 - `decision.md` when present
 - `execplan.md`
 
+If the child work item contains:
+
+- `meta_plan_id`
+- `meta_plan_slice_id`
+
+then this skill also owns reconciling the reviewed child result back into the
+matching parent meta-plan under `.agent/meta-plans/`.
+
+After a successful review pass, keep or normalize the work item to
+`stage="implementation"` and `state="completed"`. Review is not a separate
+lifecycle stage for the work-item state machine.
+
 Extract the planned behavior, touched files, validation commands, acceptance criteria, and any risks or discoveries already recorded in the plan.
 
 ## Build the Review Surface
@@ -135,7 +147,41 @@ Run the verification commands from the ExecPlan whenever they still apply. Add a
 
 If verification cannot be run, say exactly why.
 
-### Step 5: Summarize the pass
+### Step 5: Finalize metadata
+
+If operating on a work item, update `meta.json`:
+
+- `stage="implementation"`
+- `state="completed"`
+- `updated_at=<now>`
+
+### Step 6: Reconcile back into the parent meta-plan when present
+
+If the reviewed child work item has `meta_plan_id` and `meta_plan_slice_id`,
+reconcile it unless the caller explicitly says this is a non-final review pass
+that must not advance the parent meta-plan yet.
+
+When reconciling:
+
+- load the parent meta-plan directory under `.agent/meta-plans/<meta_plan_id>/`
+- read parent `meta.json`
+- read parent `slices.json`
+- update the matching slice:
+  - set `status="completed"` when the child remains `stage="implementation"` and `state="completed"`
+  - set `status="blocked"` only when the child work item ended blocked
+  - do not leave a finished slice as `active` or `ready`
+- write a short `result_summary`
+- append one concise note to the slice `notes`
+- advance `active_slice_id` to the next slice whose `depends_on` entries are all completed
+- if a next slice is chosen, mark it `active`
+- if no slices remain incomplete, mark the parent meta-plan `status="completed"`
+- otherwise keep the parent meta-plan `status="active"` or `status="blocked"` to match the frontier
+
+Reconcile against the final reviewed child state, not the pre-review state.
+
+Do not create a separate `update-meta-plan` artifact or workflow in this skill.
+
+### Step 7: Summarize the pass
 
 Report:
 
@@ -176,3 +222,4 @@ If Step 0 short-circuits, return exactly `skip` and nothing else.
 - Do not leave findings unfixed when the right change is obvious and safe.
 - Do not replace verification with speculation.
 - Do not ignore design regressions just because tests pass.
+- Do not update the parent meta-plan before the child review result is final.

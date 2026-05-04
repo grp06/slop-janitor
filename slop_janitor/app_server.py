@@ -145,6 +145,55 @@ class AppServerClient:
             raise AppServerError("thread/start response did not include thread.id")
         return thread["id"]
 
+    def set_thread_goal(
+        self,
+        thread_id: str,
+        objective: str,
+        *,
+        request_timeout_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        result = self._request(
+            "thread/goal/set",
+            {
+                "threadId": thread_id,
+                "objective": objective,
+                "status": "active",
+            },
+            timeout_seconds=request_timeout_seconds,
+        )
+        goal = result.get("goal")
+        if not isinstance(goal, dict):
+            raise AppServerError("thread/goal/set response did not include goal")
+        return goal
+
+    def get_thread_goal(
+        self,
+        thread_id: str,
+        *,
+        request_timeout_seconds: float | None = None,
+    ) -> dict[str, Any] | None:
+        result = self._request(
+            "thread/goal/get",
+            {"threadId": thread_id},
+            timeout_seconds=request_timeout_seconds,
+        )
+        goal = result.get("goal")
+        if goal is not None and not isinstance(goal, dict):
+            raise AppServerError("thread/goal/get response included non-object goal")
+        return goal
+
+    def clear_thread_goal(
+        self,
+        thread_id: str,
+        *,
+        request_timeout_seconds: float | None = None,
+    ) -> None:
+        self._request(
+            "thread/goal/clear",
+            {"threadId": thread_id},
+            timeout_seconds=request_timeout_seconds,
+        )
+
     def run_turn(
         self,
         thread_id: str,
@@ -171,7 +220,47 @@ class AppServerClient:
         turn = result.get("turn")
         if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
             raise AppServerError("turn/start response did not include turn.id")
-        session = TurnSession(thread_id=thread_id, turn_id=turn["id"], run_logger=self.run_logger)
+        return self._drive_turn(
+            thread_id,
+            turn["id"],
+            idle_timeout_seconds=idle_timeout_seconds,
+        )
+
+    def run_text_turn(
+        self,
+        thread_id: str,
+        text: str,
+        *,
+        idle_timeout_seconds: float | None = None,
+        request_timeout_seconds: float | None = None,
+    ) -> TurnResult:
+        result = self._request(
+            "turn/start",
+            {
+                "threadId": thread_id,
+                "input": [
+                    {"type": "text", "text": text, "textElements": []},
+                ],
+            },
+            timeout_seconds=request_timeout_seconds,
+        )
+        turn = result.get("turn")
+        if not isinstance(turn, dict) or not isinstance(turn.get("id"), str):
+            raise AppServerError("turn/start response did not include turn.id")
+        return self._drive_turn(
+            thread_id,
+            turn["id"],
+            idle_timeout_seconds=idle_timeout_seconds,
+        )
+
+    def _drive_turn(
+        self,
+        thread_id: str,
+        turn_id: str,
+        *,
+        idle_timeout_seconds: float | None,
+    ) -> TurnResult:
+        session = TurnSession(thread_id=thread_id, turn_id=turn_id, run_logger=self.run_logger)
 
         while True:
             event = self._next_event(timeout_seconds=idle_timeout_seconds)

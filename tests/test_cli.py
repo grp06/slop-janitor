@@ -14,6 +14,8 @@ from unittest import mock
 
 from slop_janitor.app_server import AppServerError
 from slop_janitor.app_server import AppServerSpawnSpec
+from slop_janitor.cli import build_builder_stages
+from slop_janitor.cli import build_existing_meta_plan_builder_stages
 from slop_janitor.cli import build_refactor_stages
 from slop_janitor.cli import build_stages
 from slop_janitor.cli import ensure_auto_commit_workspaces_clean
@@ -28,6 +30,9 @@ from slop_janitor.cli import prepare_auto_commit_state
 from slop_janitor.cli import resolve_codex_workspace
 from slop_janitor.cli import run
 from slop_janitor.cli import run_auth
+from slop_janitor.cli import run_goals
+from slop_janitor.goal_state import load_goal_plan
+from slop_janitor.goal_state import select_next_goal
 from slop_janitor.run_log import RunLogger
 
 
@@ -58,6 +63,44 @@ class CliTests(unittest.TestCase):
         (repo_root / "README.md").write_text("initial\n", encoding="utf-8")
         subprocess.run(["git", "add", "README.md"], cwd=repo_root, check=True)
         subprocess.run(["git", "commit", "-m", "initial"], cwd=repo_root, check=True, capture_output=True, text=True)
+
+    def write_existing_meta_plan(self, repo_root: Path, *, slice_count: int = 2, active_slice_index: int = 1) -> Path:
+        meta_plan_path = repo_root / ".agent" / "meta-plans" / "2026-04-21-test-builder"
+        meta_plan_path.mkdir(parents=True, exist_ok=True)
+        active_slice_id = f"slice-{active_slice_index}"
+        slices = []
+        for index in range(1, slice_count + 1):
+            status = "ready"
+            if index < active_slice_index:
+                status = "completed"
+            elif index == active_slice_index:
+                status = "active"
+            slices.append(
+                {
+                    "id": f"slice-{index}",
+                    "title": f"Slice {index}",
+                    "summary": f"Build slice {index}",
+                    "status": status,
+                    "child_work_item_id": None,
+                    "child_work_item_path": None,
+                    "result_summary": None,
+                    "notes": [],
+                }
+            )
+        meta = {
+            "id": "2026-04-21-test-builder",
+            "slug": "test-builder",
+            "title": "Test builder",
+            "created_at": "2026-04-21T10:00:00Z",
+            "updated_at": "2026-04-21T10:00:00Z",
+            "status": "active",
+            "active_slice_id": active_slice_id,
+            "artifacts": {"brief": "brief.md", "slices": "slices.json"},
+        }
+        (meta_plan_path / "meta.json").write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+        (meta_plan_path / "brief.md").write_text("Existing builder brief\n", encoding="utf-8")
+        (meta_plan_path / "slices.json").write_text(json.dumps(slices, indent=2, sort_keys=True), encoding="utf-8")
+        return meta_plan_path
 
     def init_git_remote(self, repo_root: Path) -> Path:
         remote_root = repo_root.parent / f"{repo_root.name}-remote.git"
@@ -134,51 +177,71 @@ class CliTests(unittest.TestCase):
         stdout = io.StringIO()
         stderr = io.StringIO()
         cli_argv = argv or []
+        mode = "janitor"
+        parse_argv = cli_argv
+        if parse_argv and parse_argv[0] in {"janitor", "builder"}:
+            mode = parse_argv[0]
+            parse_argv = parse_argv[1:]
         prompt: str | None = PROMPT
         cycles = 1
+        slices: int | None = None
+        meta_plan: str | None = None
         improvements = 1
         review = 1
-        improve_skill = "execplan-improve"
-        review_skill = "review-recent-work"
         index = 0
-        while index < len(cli_argv):
-            token = cli_argv[index]
+        while index < len(parse_argv):
+            token = parse_argv[index]
             if token == "--prompt":
-                prompt = cli_argv[index + 1]
+                prompt = parse_argv[index + 1]
                 index += 2
                 continue
             if token == "--cycles":
-                cycles = int(cli_argv[index + 1])
+                cycles = int(parse_argv[index + 1])
                 index += 2
                 continue
             if token == "--improvements":
-                improvements = int(cli_argv[index + 1])
-                index += 2
-                continue
-            if token == "--improve-skill":
-                improve_skill = cli_argv[index + 1]
+                improvements = int(parse_argv[index + 1])
                 index += 2
                 continue
             if token == "--review":
-                review = int(cli_argv[index + 1])
+                review = int(parse_argv[index + 1])
                 index += 2
                 continue
-            if token == "--review-skill":
-                review_skill = cli_argv[index + 1]
+            if token == "--slices":
+                slices = int(parse_argv[index + 1])
+                index += 2
+                continue
+            if token == "--meta-plan":
+                meta_plan = parse_argv[index + 1]
                 index += 2
                 continue
             index += 1
-        if "--prompt" not in cli_argv:
+        if "--prompt" not in parse_argv:
             prompt = None
+        if mode == "builder" and meta_plan is not None and slices is None:
+            meta_plan_path = Path(meta_plan)
+            if not meta_plan_path.is_absolute():
+                meta_plan_path = (target_cwd or default_target_cwd) / meta_plan_path
+            if meta_plan_path.name == "active":
+                meta_plan_path = meta_plan_path.resolve(strict=False)
+            meta = json.loads((meta_plan_path / "meta.json").read_text(encoding="utf-8"))
+            slice_payload = json.loads((meta_plan_path / "slices.json").read_text(encoding="utf-8"))
+            slice_items = slice_payload["slices"] if isinstance(slice_payload, dict) else slice_payload
+            active_slice_id = meta["active_slice_id"]
+            active_index = next(
+                index for index, item in enumerate(slice_items) if item.get("id") == active_slice_id
+            )
+            slices = sum(1 for item in slice_items[active_index:] if item.get("status") != "completed")
         config_path.write_text(
             json.dumps(
                 {
+                    "mode": mode,
                     "prompt": prompt,
                     "cycles": cycles,
+                    "slices": slices,
+                    "meta_plan": meta_plan,
                     "improvements": improvements,
-                    "improve_skill": improve_skill,
                     "review": review,
-                    "review_skill": review_skill,
                 }
             ),
             encoding="utf-8",
@@ -220,6 +283,71 @@ class CliTests(unittest.TestCase):
         with contextlib.redirect_stdout(stdout):
             exit_code = run_auth(argv, codex_cli_spawn_spec=self.make_codex_cli_spawn_spec(record_path))
         return exit_code, stdout.getvalue(), record_path
+
+    def write_goal_plan(self, repo_root: Path, *, goal_count: int = 1, active: bool = False) -> Path:
+        plan_dir = repo_root / ".agent" / "goals" / "2026-05-03-test-goals"
+        plan_dir.mkdir(parents=True, exist_ok=True)
+        (plan_dir / "brief.md").write_text("# Test goals\n", encoding="utf-8")
+        goals = []
+        for index in range(1, goal_count + 1):
+            goals.append(
+                {
+                    "id": f"goal-{index}",
+                    "title": f"Goal {index}",
+                    "objective": f"Write useful note {index}.",
+                    "rationale": "It proves sequencing.",
+                    "scope": ["note"],
+                    "non_goals": [],
+                    "stop_condition": "The note exists.",
+                    "acceptance_criteria": ["The note was created."],
+                    "validation": ["Inspect the note."],
+                    "depends_on": [f"goal-{index - 1}"] if index > 1 else [],
+                    "status": "ready",
+                    "result_summary": None,
+                    "evidence": [],
+                    "risks": [],
+                    "assumptions": [],
+                }
+            )
+        payload = {
+            "id": "2026-05-03-test-goals",
+            "title": "Test goals",
+            "status": "active",
+            "active_goal_id": "goal-1",
+            "created_at": "2026-05-03T12:00:00Z",
+            "updated_at": "2026-05-03T12:00:00Z",
+            "goals": goals,
+        }
+        (plan_dir / "goals.json").write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        (plan_dir / "ledger.jsonl").write_text("", encoding="utf-8")
+        if active:
+            active_path = repo_root / ".agent" / "goals" / "active"
+            if active_path.exists() or active_path.is_symlink():
+                active_path.unlink()
+            active_path.symlink_to(plan_dir.name)
+        return plan_dir
+
+    def run_goals_command(
+        self,
+        scenario: str,
+        *,
+        target_cwd: Path,
+        argv: list[str],
+    ) -> tuple[int, str, str, Path]:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        record_path = Path(tempdir.name) / f"{scenario}.json"
+        runs_dir = Path(tempdir.name) / "runs"
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with chdir(target_cwd):
+            with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                exit_code = run_goals(
+                    argv,
+                    spawn_spec=self.make_app_server_spawn_spec(scenario, record_path),
+                    runs_dir=runs_dir,
+                )
+        return exit_code, stdout.getvalue(), stderr.getvalue(), record_path
 
     def read_json(self, path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
@@ -287,6 +415,171 @@ class CliTests(unittest.TestCase):
         self.assertEqual(exit_code, 1)
         self.assertIn("slop-janitor auth login", stderr)
         self.assertNotIn("thread/start", methods)
+
+    def test_goal_plan_validation_selects_first_ready_goal(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        repo_root = Path(tempdir.name)
+        plan_dir = self.write_goal_plan(repo_root)
+
+        plan = load_goal_plan(repo_root, str(plan_dir))
+        goal = select_next_goal(plan)
+
+        self.assertIsNotNone(goal)
+        assert goal is not None
+        self.assertEqual(goal["id"], "goal-1")
+
+    def test_goal_plan_validation_requires_ledger(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        repo_root = Path(tempdir.name)
+        plan_dir = self.write_goal_plan(repo_root)
+        (plan_dir / "ledger.jsonl").unlink()
+
+        with self.assertRaisesRegex(AppServerError, "ledger.jsonl"):
+            load_goal_plan(repo_root, str(plan_dir))
+
+    def test_goals_run_warns_when_codex_goal_feature_is_disabled(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        repo_root = Path(tempdir.name)
+        self.init_git_repo(repo_root)
+        plan_dir = self.write_goal_plan(repo_root)
+
+        exit_code, _, stderr, record_path = self.run_goals_command(
+            "goal_feature_disabled",
+            target_cwd=repo_root,
+            argv=["run", str(plan_dir), "--max-goals", "1"],
+        )
+        record = self.read_json(record_path)
+        methods = [message["method"] for message in self.inbound_messages(record) if "method" in message]
+        updated = json.loads((plan_dir / "goals.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("experimental goals feature is not enabled", stderr)
+        self.assertIn("thread/goal/get", methods)
+        self.assertNotIn("thread/goal/set", methods)
+        self.assertEqual(updated["goals"][0]["status"], "ready")
+
+    def test_goals_run_uses_goal_api_and_marks_goal_complete(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        repo_root = Path(tempdir.name)
+        self.init_git_repo(repo_root)
+        plan_dir = self.write_goal_plan(repo_root)
+
+        exit_code, _, stderr, record_path = self.run_goals_command(
+            "goal_run",
+            target_cwd=repo_root,
+            argv=["run", str(plan_dir), "--max-goals", "1"],
+        )
+        record = self.read_json(record_path)
+        methods = [message["method"] for message in self.inbound_messages(record) if "method" in message]
+        updated = json.loads((plan_dir / "goals.json").read_text(encoding="utf-8"))
+        ledger = (plan_dir / "ledger.jsonl").read_text(encoding="utf-8")
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("thread/goal/set", methods)
+        self.assertIn("thread/goal/get", methods)
+        self.assertIn("thread/goal/clear", methods)
+        self.assertEqual(updated["goals"][0]["status"], "completed")
+        self.assertIn("goal_completed", ledger)
+
+    def test_goals_run_defaults_to_active_goal_plan(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        repo_root = Path(tempdir.name)
+        self.init_git_repo(repo_root)
+        plan_dir = self.write_goal_plan(repo_root, active=True)
+
+        exit_code, _, stderr, record_path = self.run_goals_command(
+            "goal_run",
+            target_cwd=repo_root,
+            argv=["run", "--max-goals", "1"],
+        )
+        record = self.read_json(record_path)
+        methods = [message["method"] for message in self.inbound_messages(record) if "method" in message]
+        updated = json.loads((plan_dir / "goals.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("thread/goal/set", methods)
+        self.assertEqual(updated["goals"][0]["status"], "completed")
+
+    def test_goals_run_without_path_requires_active_goal_plan(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        repo_root = Path(tempdir.name)
+        self.init_git_repo(repo_root)
+
+        exit_code, _, stderr, record_path = self.run_goals_command(
+            "goal_run",
+            target_cwd=repo_root,
+            argv=["run", "--max-goals", "1"],
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn(".agent/goals/active", stderr)
+        self.assertFalse(record_path.exists())
+
+    def test_goals_run_commits_goal_artifacts_after_completion(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        repo_root = Path(tempdir.name)
+        self.init_git_repo(repo_root)
+        plan_dir = self.write_goal_plan(repo_root)
+
+        exit_code, _, stderr, _ = self.run_goals_command(
+            "goal_run",
+            target_cwd=repo_root,
+            argv=["run", str(plan_dir), "--max-goals", "1"],
+        )
+        committed_goals = subprocess.run(
+            ["git", "show", "HEAD:.agent/goals/2026-05-03-test-goals/goals.json"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        committed_ledger = subprocess.run(
+            ["git", "show", "HEAD:.agent/goals/2026-05-03-test-goals/ledger.jsonl"],
+            cwd=repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn('"status": "completed"', committed_goals)
+        self.assertIn("goal_completed", committed_ledger)
+
+    def test_goals_run_executes_goals_sequentially(self) -> None:
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        repo_root = Path(tempdir.name)
+        self.init_git_repo(repo_root)
+        plan_dir = self.write_goal_plan(repo_root, goal_count=2)
+
+        exit_code, _, stderr, record_path = self.run_goals_command(
+            "goal_run_two",
+            target_cwd=repo_root,
+            argv=["run", str(plan_dir), "--max-goals", "2"],
+        )
+        record = self.read_json(record_path)
+        goal_sets = [
+            message for message in self.inbound_messages(record) if message.get("method") == "thread/goal/set"
+        ]
+        updated = json.loads((plan_dir / "goals.json").read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(len(goal_sets), 2)
+        self.assertIn("Goal: Goal 1 (goal-1)", goal_sets[0]["params"]["objective"])
+        self.assertIn("Goal: Goal 2 (goal-2)", goal_sets[1]["params"]["objective"])
+        self.assertEqual([goal["status"] for goal in updated["goals"]], ["completed", "completed"])
+        self.assertEqual(updated["status"], "completed")
 
     def test_default_workflow_uses_refactor_candidate_prompt_when_missing(self) -> None:
         exit_code, _, stderr, record_path = self.run_workflow("refactor_without_prompt", argv=[])
@@ -425,7 +718,7 @@ class CliTests(unittest.TestCase):
             maybe_commit_for_stage(
                 auto_commit,
                 run_logger,
-                mock.Mock(label="execplan-improve-subagents-1", skill_name="execplan-improve-subagents"),
+                mock.Mock(label="execplan-improve-1", skill_name="execplan-improve"),
                 stage_index=4,
                 improvement_count=1,
                 review_count=1,
@@ -446,8 +739,8 @@ class CliTests(unittest.TestCase):
                 auto_commit,
                 run_logger,
                 mock.Mock(
-                    label="review-recent-work-subagents-1",
-                    skill_name="review-recent-work-subagents",
+                    label="review-recent-work-1",
+                    skill_name="review-recent-work",
                 ),
                 stage_index=6,
                 improvement_count=1,
@@ -470,9 +763,9 @@ class CliTests(unittest.TestCase):
             history[:5],
             [
                 "slop-janitor: final checkpoint",
-                "slop-janitor: after review-recent-work-subagents-1",
+                "slop-janitor: after review-recent-work-1",
                 "slop-janitor: after implement-execplan",
-                "slop-janitor: after execplan-improve-subagents-1",
+                "slop-janitor: after execplan-improve-1",
                 "initial",
             ],
         )
@@ -492,8 +785,8 @@ class CliTests(unittest.TestCase):
                 auto_commit,
                 run_logger,
                 mock.Mock(
-                    label="cycle-1-review-recent-work-subagents-1",
-                    skill_name="review-recent-work-subagents",
+                    label="cycle-1-review-recent-work-1",
+                    skill_name="review-recent-work",
                 ),
                 stage_index=5,
                 improvement_count=0,
@@ -529,8 +822,8 @@ class CliTests(unittest.TestCase):
                 auto_commit,
                 run_logger,
                 mock.Mock(
-                    label="cycle-1-review-recent-work-subagents-2",
-                    skill_name="review-recent-work-subagents",
+                    label="cycle-1-review-recent-work-2",
+                    skill_name="review-recent-work",
                 ),
                 stage_index=6,
                 improvement_count=0,
@@ -549,7 +842,7 @@ class CliTests(unittest.TestCase):
         self.assertEqual(
             history[:2],
             [
-                "slop-janitor: after cycle-1-review-recent-work-subagents-2",
+                "slop-janitor: after cycle-1-review-recent-work-2",
                 "initial",
             ],
         )
@@ -830,6 +1123,7 @@ class CliTests(unittest.TestCase):
                 auto_commits,
                 run_logger,
                 mock.Mock(label="execplan-create", skill_name="execplan-create"),
+                mode="janitor",
                 stage_index=3,
                 improvement_count=0,
                 review_count=0,
@@ -841,6 +1135,7 @@ class CliTests(unittest.TestCase):
                 auto_commits,
                 run_logger,
                 mock.Mock(label="implement-execplan", skill_name="implement-execplan"),
+                mode="janitor",
                 stage_index=8,
                 improvement_count=4,
                 review_count=0,
@@ -912,46 +1207,15 @@ class CliTests(unittest.TestCase):
         self.assertIn("slop-janitor: after cycle-1-review-recent-work-1", history)
         self.assertIn("slop-janitor: after cycle-2-review-recent-work-1", history)
 
-    def test_non_subagent_review_stage_changes_in_linked_repo_are_checkpointed_before_next_cycle(self) -> None:
-        tempdir = tempfile.TemporaryDirectory()
-        self.addCleanup(tempdir.cleanup)
-        workspace_root = Path(tempdir.name)
-        cloud_root = workspace_root / "openclaw-cloud"
-        studio_root = workspace_root / "openclaw-studio-private"
-        cloud_root.mkdir()
-        studio_root.mkdir()
-        self.init_git_repo(cloud_root)
-        self.init_git_repo(studio_root)
-        prompt = f"Treat {cloud_root} and {studio_root} as one project"
-
-        exit_code, _, stderr, _ = self.run_pipeline(
+    def test_removed_review_skill_flag_is_rejected(self) -> None:
+        exit_code, _, stderr, record_path = self.run_pipeline(
             "review_mutates_linked_repo",
-            argv=[
-                "--prompt",
-                prompt,
-                "--cycles",
-                "2",
-                "--improvements",
-                "0",
-                "--review",
-                "1",
-                "--review-skill",
-                "review-recent-work",
-            ],
-            target_cwd=cloud_root,
+            argv=["--review-skill", "review-recent-work"],
         )
 
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(stderr, "")
-        history = subprocess.run(
-            ["git", "log", "--format=%s", "-6"],
-            cwd=studio_root,
-            check=True,
-            capture_output=True,
-            text=True,
-        ).stdout.strip().splitlines()
-        self.assertIn("slop-janitor: after cycle-1-review-recent-work-1", history)
-        self.assertIn("slop-janitor: after cycle-2-review-recent-work-1", history)
+        self.assertEqual(exit_code, 2)
+        self.assertIn("unrecognized arguments: --review-skill", stderr)
+        self.assertFalse(record_path.exists())
 
     def test_default_workflow_runs_candidate_selection_flow_with_prompt(self) -> None:
         exit_code, stdout, stderr, record_path = self.run_pipeline(
@@ -987,7 +1251,7 @@ class CliTests(unittest.TestCase):
             "$execplan-improve improve the active work-item ExecPlan and rewrite it in place",
         )
 
-    def test_default_workflow_allows_selecting_non_subagent_follow_up_skills(self) -> None:
+    def test_removed_improve_skill_flag_is_rejected(self) -> None:
         exit_code, _, stderr, record_path = self.run_pipeline(
             "refactor_with_prompt",
             argv=[
@@ -1003,24 +1267,10 @@ class CliTests(unittest.TestCase):
                 "1",
             ],
         )
-        record = self.read_json(record_path)
-        _, log_text = self.read_run_log(record_path)
-        turn_starts = [
-            message for message in self.inbound_messages(record) if message.get("method") == "turn/start"
-        ]
 
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(stderr, "")
-        self.assertIn("=== Stage 4/6: execplan-improve-1 ===", log_text)
-        self.assertIn("=== Stage 6/6: review-recent-work-1 ===", log_text)
-        self.assertEqual(
-            turn_starts[3]["params"]["input"][0]["text"],
-            "$execplan-improve improve the active work-item ExecPlan and rewrite it in place",
-        )
-        self.assertEqual(
-            turn_starts[5]["params"]["input"][0]["text"],
-            "$review-recent-work review the most recently implemented work-item ExecPlan",
-        )
+        self.assertEqual(exit_code, 2)
+        self.assertIn("unrecognized arguments: --improve-skill", stderr)
+        self.assertFalse(record_path.exists())
 
     def test_default_workflow_allows_missing_prompt(self) -> None:
         exit_code, stdout, stderr, record_path = self.run_pipeline(
@@ -1041,6 +1291,176 @@ class CliTests(unittest.TestCase):
             turn_start["params"]["input"][0]["text"],
             f"$find-refactor-candidates {DEFAULT_REFACTOR_PROMPT}",
         )
+
+    def test_janitor_subcommand_matches_default_workflow(self) -> None:
+        exit_code, _, stderr, record_path = self.run_pipeline(
+            "refactor_with_prompt",
+            argv=["janitor", "--prompt", PROMPT],
+        )
+        record = self.read_json(record_path)
+        turn_starts = [
+            message for message in self.inbound_messages(record) if message.get("method") == "turn/start"
+        ]
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(len(turn_starts), 6)
+        self.assertEqual(turn_starts[0]["params"]["input"][0]["text"], f"$find-refactor-candidates {PROMPT}")
+
+    def test_builder_requires_prompt_and_slices(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            target_dir = Path(tempdir) / "workspace"
+            target_dir.mkdir()
+            self.init_git_repo(target_dir)
+            stderr = io.StringIO()
+            with chdir(target_dir), contextlib.redirect_stderr(stderr):
+                exit_code = run(["builder", "--slices", "2"], runs_dir=Path(tempdir) / "runs")
+            self.assertEqual(exit_code, 1)
+            self.assertIn("builder mode requires --prompt", stderr.getvalue())
+
+        with tempfile.TemporaryDirectory() as tempdir:
+            target_dir = Path(tempdir) / "workspace"
+            target_dir.mkdir()
+            self.init_git_repo(target_dir)
+            stderr = io.StringIO()
+            with chdir(target_dir), contextlib.redirect_stderr(stderr):
+                exit_code = run(["builder", "--prompt", PROMPT], runs_dir=Path(tempdir) / "runs")
+            self.assertEqual(exit_code, 1)
+            self.assertIn("builder mode requires --slices", stderr.getvalue())
+
+    def test_builder_meta_plan_rejects_prompt_and_slices(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            target_dir = Path(tempdir) / "workspace"
+            target_dir.mkdir()
+            meta_plan_path = self.write_existing_meta_plan(target_dir)
+            stderr = io.StringIO()
+            with chdir(target_dir), contextlib.redirect_stderr(stderr):
+                exit_code = run(
+                    ["builder", "--meta-plan", str(meta_plan_path), "--prompt", PROMPT],
+                    runs_dir=Path(tempdir) / "runs",
+                )
+            self.assertEqual(exit_code, 1)
+            self.assertIn("cannot combine --meta-plan with --prompt", stderr.getvalue())
+
+            stderr = io.StringIO()
+            with chdir(target_dir), contextlib.redirect_stderr(stderr):
+                exit_code = run(
+                    ["builder", "--meta-plan", str(meta_plan_path), "--slices", "2"],
+                    runs_dir=Path(tempdir) / "runs",
+                )
+            self.assertEqual(exit_code, 1)
+            self.assertIn("cannot combine --meta-plan with --slices", stderr.getvalue())
+
+    def test_builder_meta_plan_missing_path_fails_before_app_server(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            target_dir = Path(tempdir) / "workspace"
+            target_dir.mkdir()
+            stderr = io.StringIO()
+            with chdir(target_dir), contextlib.redirect_stderr(stderr):
+                exit_code = run(
+                    ["builder", "--meta-plan", ".agent/meta-plans/missing"],
+                    runs_dir=Path(tempdir) / "runs",
+                )
+            self.assertEqual(exit_code, 1)
+            self.assertIn("`--meta-plan` does not exist", stderr.getvalue())
+
+    def test_builder_meta_plan_requires_active_readable_plan(self) -> None:
+        with tempfile.TemporaryDirectory() as tempdir:
+            target_dir = Path(tempdir) / "workspace"
+            target_dir.mkdir()
+            meta_plan_path = self.write_existing_meta_plan(target_dir)
+            meta_path = meta_plan_path / "meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["status"] = "completed"
+            meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+
+            stderr = io.StringIO()
+            with chdir(target_dir), contextlib.redirect_stderr(stderr):
+                exit_code = run(
+                    ["builder", "--meta-plan", str(meta_plan_path)],
+                    runs_dir=Path(tempdir) / "runs",
+                )
+            self.assertEqual(exit_code, 1)
+            self.assertIn("status must be `active`", stderr.getvalue())
+
+    def test_builder_runs_meta_plan_and_slice_threads(self) -> None:
+        exit_code, stdout, stderr, record_path = self.run_pipeline(
+            "happy_path",
+            argv=["builder", "--prompt", PROMPT, "--slices", "2", "--improvements", "1", "--review", "1"],
+        )
+        record = self.read_json(record_path)
+        _, log_text = self.read_run_log(record_path)
+        turn_starts = [
+            message for message in self.inbound_messages(record) if message.get("method") == "turn/start"
+        ]
+        thread_starts = [
+            message for message in self.inbound_messages(record) if message.get("method") == "thread/start"
+        ]
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(len(turn_starts), 9)
+        self.assertEqual(len(thread_starts), 3)
+        self.assertIn("========== Builder Project ==========", stdout)
+        self.assertIn("========== Builder Slice 1/2 ==========", stdout)
+        self.assertIn("=== Stage 1/9: create-meta-plan ===", log_text)
+        self.assertIn("=== Stage 9/9: slice-2-review-recent-work-1 ===", log_text)
+        self.assertEqual(turn_starts[0]["params"]["input"][1]["name"], "create-meta-plan")
+        self.assertEqual(turn_starts[1]["params"]["input"][1]["name"], "execplan-create")
+
+    def test_builder_runs_existing_meta_plan_without_prompt_or_slices(self) -> None:
+        target_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(target_dir, ignore_errors=True))
+        meta_plan_path = self.write_existing_meta_plan(target_dir, slice_count=2)
+
+        exit_code, stdout, stderr, record_path = self.run_pipeline(
+            "happy_path",
+            argv=["builder", "--meta-plan", str(meta_plan_path), "--improvements", "1", "--review", "1"],
+            target_cwd=target_dir,
+        )
+        record = self.read_json(record_path)
+        _, log_text = self.read_run_log(record_path)
+        turn_starts = [
+            message for message in self.inbound_messages(record) if message.get("method") == "turn/start"
+        ]
+        thread_starts = [
+            message for message in self.inbound_messages(record) if message.get("method") == "thread/start"
+        ]
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(len(turn_starts), 8)
+        self.assertEqual(len(thread_starts), 2)
+        self.assertIn("slices=2", log_text)
+        self.assertIn(f"metaPlan={meta_plan_path.resolve(strict=False)}", log_text)
+        self.assertNotIn("create-meta-plan", turn_starts[0]["params"]["input"][0]["text"])
+        self.assertEqual(turn_starts[0]["params"]["input"][1]["name"], "execplan-create")
+        self.assertIn("========== Builder Slice 1/2 ==========", stdout)
+        self.assertNotIn("========== Builder Project ==========", stdout)
+        self.assertIn("=== Stage 1/8: slice-1-execplan-create ===", log_text)
+        self.assertIn("=== Stage 8/8: slice-2-review-recent-work-1 ===", log_text)
+
+    def test_builder_meta_plan_accepts_active_link(self) -> None:
+        target_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(target_dir, ignore_errors=True))
+        meta_plan_path = self.write_existing_meta_plan(target_dir, slice_count=1)
+        active_link = target_dir / ".agent" / "meta-plans" / "active"
+        active_link.symlink_to(meta_plan_path)
+
+        exit_code, _, stderr, record_path = self.run_pipeline(
+            "happy_path",
+            argv=["builder", "--meta-plan", ".agent/meta-plans/active"],
+            target_cwd=target_dir,
+        )
+        record = self.read_json(record_path)
+        turn_starts = [
+            message for message in self.inbound_messages(record) if message.get("method") == "turn/start"
+        ]
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(stderr, "")
+        self.assertEqual(len(turn_starts), 4)
+        self.assertEqual(turn_starts[0]["params"]["input"][1]["name"], "execplan-create")
 
     def test_custom_cycles_improvements_and_review_counts(self) -> None:
         exit_code, stdout, stderr, record_path = self.run_pipeline(
@@ -1159,8 +1579,19 @@ class CliTests(unittest.TestCase):
         initialize = next(message for message in inbound if message.get("method") == "initialize")
         self.assertTrue(initialize["params"]["capabilities"]["experimentalApi"])
 
-    def test_thread_start_requests_workspace_write_sandbox(self) -> None:
+    def test_thread_start_defaults_to_danger_full_access(self) -> None:
         exit_code, _, _, record_path = self.run_pipeline("happy_path")
+        record = self.read_json(record_path)
+        thread_start = next(
+            message for message in self.inbound_messages(record) if message.get("method") == "thread/start"
+        )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(thread_start["params"]["sandbox"], "danger-full-access")
+        self.assertNotIn("config", thread_start["params"])
+
+    def test_thread_start_can_request_workspace_write_sandbox(self) -> None:
+        exit_code, _, _, record_path = self.run_pipeline("happy_path", argv=["--sandbox", "workspace-write"])
         record = self.read_json(record_path)
         thread_start = next(
             message for message in self.inbound_messages(record) if message.get("method") == "thread/start"
@@ -1190,6 +1621,8 @@ class CliTests(unittest.TestCase):
             argv=[
                 "--prompt",
                 PROMPT,
+                "--sandbox",
+                "workspace-write",
                 "--linked-repo",
                 str(studio_root),
             ],
@@ -1316,7 +1749,7 @@ class CliTests(unittest.TestCase):
                 "--prompt",
                 PROMPT,
                 "--stage-idle-timeout-seconds",
-                "0.05",
+                "0.2",
                 "--retry-initial-delay-seconds",
                 "0.01",
                 "--retry-max-delay-seconds",
@@ -1328,7 +1761,7 @@ class CliTests(unittest.TestCase):
         methods = [message.get("method") for message in inbound if "method" in message]
 
         self.assertEqual(exit_code, 0)
-        self.assertIn("turn/run timed out after 0.1s", stderr)
+        self.assertIn("turn/run timed out after 0.2s", stderr)
         self.assertGreaterEqual(methods.count("initialize"), 2)
         self.assertGreaterEqual(methods.count("thread/start"), 2)
 
@@ -1409,8 +1842,6 @@ class CliTests(unittest.TestCase):
             cycles=1,
             improvement_count=4,
             review_count=5,
-            improve_skill_name="execplan-improve-subagents",
-            review_skill_name="review-recent-work-subagents",
         )
 
         self.assertEqual(len(stages), 13)
@@ -1421,7 +1852,7 @@ class CliTests(unittest.TestCase):
         )
         self.assertEqual(stages[1].label, "select-refactor")
         self.assertEqual(stages[2].label, "execplan-create")
-        self.assertEqual(stages[3].label, "execplan-improve-subagents-1")
+        self.assertEqual(stages[3].label, "execplan-improve-1")
 
     def test_build_refactor_stage_forbids_implementation_during_planning_stage(self) -> None:
         stages = build_refactor_stages(
@@ -1429,8 +1860,6 @@ class CliTests(unittest.TestCase):
             cycles=1,
             improvement_count=4,
             review_count=5,
-            improve_skill_name="execplan-improve-subagents",
-            review_skill_name="review-recent-work-subagents",
         )
 
         self.assertEqual(stages[0].text, f"$find-refactor-candidates {PROMPT}")
@@ -1449,15 +1878,13 @@ class CliTests(unittest.TestCase):
             cycles=2,
             improvement_count=1,
             review_count=2,
-            improve_skill_name="execplan-improve-subagents",
-            review_skill_name="review-recent-work-subagents",
         )
 
         self.assertEqual(len(stages), 14)
         self.assertEqual(stages[0].label, "cycle-1-find-refactor-candidates")
         self.assertEqual(stages[4].label, "cycle-1-implement-execplan")
-        self.assertEqual(stages[5].label, "cycle-1-review-recent-work-subagents-1")
-        self.assertEqual(stages[-1].label, "cycle-2-review-recent-work-subagents-2")
+        self.assertEqual(stages[5].label, "cycle-1-review-recent-work-1")
+        self.assertEqual(stages[-1].label, "cycle-2-review-recent-work-2")
 
     def test_build_stages_respects_selected_follow_up_skills(self) -> None:
         stages = build_stages(
@@ -1465,8 +1892,6 @@ class CliTests(unittest.TestCase):
             cycles=1,
             improvement_count=1,
             review_count=1,
-            improve_skill_name="execplan-improve",
-            review_skill_name="review-recent-work",
         )
 
         self.assertEqual([stage.label for stage in stages], [
@@ -1476,6 +1901,44 @@ class CliTests(unittest.TestCase):
             "execplan-improve-1",
             "implement-execplan",
             "review-recent-work-1",
+        ])
+
+    def test_build_builder_stages_respects_slice_counts(self) -> None:
+        stages = build_builder_stages(
+            PROMPT,
+            slices=2,
+            improvement_count=1,
+            review_count=1,
+        )
+
+        self.assertEqual([stage.label for stage in stages], [
+            "create-meta-plan",
+            "slice-1-execplan-create",
+            "slice-1-execplan-improve-1",
+            "slice-1-implement-execplan",
+            "slice-1-review-recent-work-1",
+            "slice-2-execplan-create",
+            "slice-2-execplan-improve-1",
+            "slice-2-implement-execplan",
+            "slice-2-review-recent-work-1",
+        ])
+
+    def test_build_existing_meta_plan_builder_stages_starts_with_slice_execplan(self) -> None:
+        stages = build_existing_meta_plan_builder_stages(
+            slices=2,
+            improvement_count=1,
+            review_count=1,
+        )
+
+        self.assertEqual([stage.label for stage in stages], [
+            "slice-1-execplan-create",
+            "slice-1-execplan-improve-1",
+            "slice-1-implement-execplan",
+            "slice-1-review-recent-work-1",
+            "slice-2-execplan-create",
+            "slice-2-execplan-improve-1",
+            "slice-2-implement-execplan",
+            "slice-2-review-recent-work-1",
         ])
 
     def test_unexpected_approval_request_declines_and_fails(self) -> None:

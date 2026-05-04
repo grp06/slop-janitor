@@ -9,42 +9,25 @@ import time
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from slop_janitor import workflow_topology
+
 
 SKILLS_ROOT = str(Path(__file__).resolve().parents[2] / ".agents" / "skills")
 PROMPT = "help me build a CRM"
 DEFAULT_REFACTOR_PROMPT = "identify the top materially different refactor candidates in this repository"
-
-
-def build_follow_up_stages(
-    *,
-    improvement_count: int,
-    review_count: int,
-    improve_skill_name: str,
-    review_skill_name: str,
-) -> list[dict[str, str]]:
-    return [
-        *[
-            {
-                "skill_name": improve_skill_name,
-                "skill_path": f"{SKILLS_ROOT}/{improve_skill_name}/SKILL.md",
-                "text": f"${improve_skill_name} improve the active work-item ExecPlan and rewrite it in place",
-            }
-            for _ in range(improvement_count)
-        ],
-        {
-            "skill_name": "implement-execplan",
-            "skill_path": f"{SKILLS_ROOT}/implement-execplan/SKILL.md",
-            "text": "$implement-execplan implement the active work-item ExecPlan",
-        },
-        *[
-            {
-                "skill_name": review_skill_name,
-                "skill_path": f"{SKILLS_ROOT}/{review_skill_name}/SKILL.md",
-                "text": f"${review_skill_name} review the most recently implemented work-item ExecPlan",
-            }
-            for _ in range(review_count)
-        ],
-    ]
+SKILL_PATHS = {
+    "create-meta-plan": f"{SKILLS_ROOT}/create-meta-plan/SKILL.md",
+    "find-refactor-candidates": f"{SKILLS_ROOT}/find-refactor-candidates/SKILL.md",
+    "select-refactor": f"{SKILLS_ROOT}/select-refactor/SKILL.md",
+    "execplan-create": f"{SKILLS_ROOT}/execplan-create/SKILL.md",
+    "execplan-improve": f"{SKILLS_ROOT}/execplan-improve/SKILL.md",
+    "implement-execplan": f"{SKILLS_ROOT}/implement-execplan/SKILL.md",
+    "review-recent-work": f"{SKILLS_ROOT}/review-recent-work/SKILL.md",
+}
 
 
 def build_expected_refactor_stages(
@@ -53,44 +36,57 @@ def build_expected_refactor_stages(
     cycles: int,
     improvement_count: int,
     review_count: int,
-    improve_skill_name: str,
-    review_skill_name: str,
 ) -> list[dict[str, str]]:
-    stages: list[dict[str, str]] = []
-    for _ in range(cycles):
-        refactor_prompt = prompt or DEFAULT_REFACTOR_PROMPT
-        stages.extend(
-            [
-                {
-                    "skill_name": "find-refactor-candidates",
-                    "skill_path": f"{SKILLS_ROOT}/find-refactor-candidates/SKILL.md",
-                    "text": f"$find-refactor-candidates {refactor_prompt}",
-                },
-                {
-                    "skill_name": "select-refactor",
-                    "skill_path": f"{SKILLS_ROOT}/select-refactor/SKILL.md",
-                    "text": "$select-refactor pressure-test the active shortlist, lock the best refactor decision, and stop before planning.",
-                },
-                {
-                    "skill_name": "execplan-create",
-                    "skill_path": f"{SKILLS_ROOT}/execplan-create/SKILL.md",
-                    "text": "$execplan-create create an ExecPlan for the active refactor work item and write it into that work item",
-                },
-            ]
+    return [
+        {
+            "label": stage.label,
+            "skill_name": stage.skill_name,
+            "skill_path": stage.skill_path,
+            "text": stage.text,
+        }
+        for stage in workflow_topology.build_refactor_stages(
+            prompt,
+            cycles=cycles,
+            improvement_count=improvement_count,
+            review_count=review_count,
+            skill_paths=SKILL_PATHS,
+            default_refactor_prompt=DEFAULT_REFACTOR_PROMPT,
         )
-        stages.extend(
-            build_follow_up_stages(
-                improvement_count=improvement_count,
-                review_count=review_count,
-                improve_skill_name=improve_skill_name,
-                review_skill_name=review_skill_name,
-            )
-        )
-    return stages
+    ]
 
 
-def planning_stage_count() -> int:
-    return 3
+def build_expected_builder_stages(
+    *,
+    prompt: str | None,
+    slices: int,
+    improvement_count: int,
+    review_count: int,
+    includes_meta_plan_creation: bool,
+) -> list[dict[str, str]]:
+    if includes_meta_plan_creation:
+        stages = workflow_topology.build_builder_stages(
+            str(prompt),
+            slices=slices,
+            improvement_count=improvement_count,
+            review_count=review_count,
+            skill_paths=SKILL_PATHS,
+        )
+    else:
+        stages = workflow_topology.build_existing_meta_plan_builder_stages(
+            slices=slices,
+            improvement_count=improvement_count,
+            review_count=review_count,
+            skill_paths=SKILL_PATHS,
+        )
+    return [
+        {
+            "label": stage.label,
+            "skill_name": stage.skill_name,
+            "skill_path": stage.skill_path,
+            "text": stage.text,
+        }
+        for stage in stages
+    ]
 
 
 class ProtocolError(RuntimeError):
@@ -108,26 +104,35 @@ class FakeServer:
         self.session_index = len(previous_record.get("sessions", [])) if isinstance(previous_record, dict) else 0
         self.thread_id = "thread-0"
         self.thread_count = 0
+        self.current_goal: dict[str, Any] | None = None
         self.run_cwd: Path | None = None
         config_path = Path(sys.argv[3]) if len(sys.argv) == 4 else None
         self.config = {
+            "mode": "janitor",
             "prompt": PROMPT,
             "cycles": 1,
+            "slices": None,
+            "meta_plan": None,
             "improvements": 1,
-            "improve_skill": "execplan-improve",
             "review": 1,
-            "review_skill": "review-recent-work",
         }
         if config_path is not None:
             self.config.update(json.loads(config_path.read_text(encoding="utf-8")))
-        self.expected_stages = build_expected_refactor_stages(
-            self.config.get("prompt"),
-            cycles=int(self.config["cycles"]),
-            improvement_count=int(self.config["improvements"]),
-            review_count=int(self.config["review"]),
-            improve_skill_name=str(self.config["improve_skill"]),
-            review_skill_name=str(self.config["review_skill"]),
-        )
+        if self.config.get("mode") == "builder":
+            self.expected_stages = build_expected_builder_stages(
+                prompt=self.config.get("prompt"),
+                slices=int(self.config["slices"]),
+                improvement_count=int(self.config["improvements"]),
+                review_count=int(self.config["review"]),
+                includes_meta_plan_creation=self.config.get("meta_plan") is None,
+            )
+        else:
+            self.expected_stages = build_expected_refactor_stages(
+                self.config.get("prompt"),
+                cycles=int(self.config["cycles"]),
+                improvement_count=int(self.config["improvements"]),
+                review_count=int(self.config["review"]),
+            )
         self.error: str | None = None
 
     def active_link_path(self) -> Path:
@@ -138,7 +143,28 @@ class FakeServer:
     def work_item_path(self) -> Path:
         if self.run_cwd is None:
             raise ProtocolError("run cwd is not set")
+        if self.config.get("mode") == "builder":
+            slice_id = self.active_meta_plan_slice_id() or "slice-1"
+            return self.run_cwd / ".agent" / "work" / f"2026-04-21-test-{slice_id}"
         return self.run_cwd / ".agent" / "work" / "2026-04-21-test-refactor"
+
+    def active_meta_plan_path(self) -> Path:
+        if self.run_cwd is None:
+            raise ProtocolError("run cwd is not set")
+        return self.run_cwd / ".agent" / "meta-plans" / "2026-04-21-test-builder"
+
+    def active_meta_plan_link_path(self) -> Path:
+        if self.run_cwd is None:
+            raise ProtocolError("run cwd is not set")
+        return self.run_cwd / ".agent" / "meta-plans" / "active"
+
+    def active_meta_plan_slice_id(self) -> str | None:
+        meta_path = self.active_meta_plan_path() / "meta.json"
+        if not meta_path.is_file():
+            return None
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        value = meta.get("active_slice_id")
+        return str(value) if value else None
 
     def work_item_meta_path(self) -> Path:
         return self.work_item_path() / "meta.json"
@@ -161,8 +187,8 @@ class FakeServer:
 
     def write_meta(self, *, stage: str, state: str) -> None:
         payload = {
-            "id": "2026-04-21-test-refactor",
-            "slug": "test-refactor",
+            "id": self.work_item_path().name,
+            "slug": self.work_item_path().name.removeprefix("2026-04-21-"),
             "title": "Test refactor work item",
             "created_at": "2026-04-21T10:00:00Z",
             "updated_at": "2026-04-21T10:05:00Z",
@@ -175,7 +201,85 @@ class FakeServer:
                 "review": None,
             },
         }
+        if self.config.get("mode") == "builder":
+            slice_id = self.active_meta_plan_slice_id() or "slice-1"
+            payload["meta_plan_id"] = "2026-04-21-test-builder"
+            payload["meta_plan_slice_id"] = slice_id
         self.work_item_meta_path().write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+
+    def write_meta_plan(self) -> None:
+        meta_plan_path = self.active_meta_plan_path()
+        meta_plan_path.mkdir(parents=True, exist_ok=True)
+        active_link = self.active_meta_plan_link_path()
+        active_link.parent.mkdir(parents=True, exist_ok=True)
+        if active_link.exists() or active_link.is_symlink():
+            active_link.unlink()
+        active_link.symlink_to(meta_plan_path)
+        slices = [
+            {
+                "id": f"slice-{index}",
+                "title": f"Slice {index}",
+                "summary": f"Build slice {index}",
+                "status": "active" if index == 1 else "ready",
+                "child_work_item_id": None,
+                "child_work_item_path": None,
+                "result_summary": None,
+                "notes": [],
+            }
+            for index in range(1, int(self.config["slices"]) + 1)
+        ]
+        meta = {
+            "id": "2026-04-21-test-builder",
+            "slug": "test-builder",
+            "title": "Test builder",
+            "created_at": "2026-04-21T10:00:00Z",
+            "updated_at": "2026-04-21T10:00:00Z",
+            "status": "active",
+            "active_slice_id": "slice-1",
+            "artifacts": {"brief": "brief.md", "slices": "slices.json"},
+        }
+        (meta_plan_path / "meta.json").write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
+        (meta_plan_path / "brief.md").write_text("Test builder brief\n", encoding="utf-8")
+        (meta_plan_path / "slices.json").write_text(json.dumps(slices, indent=2, sort_keys=True), encoding="utf-8")
+
+    def record_child_work_item_on_active_slice(self) -> None:
+        slice_id = self.active_meta_plan_slice_id()
+        if slice_id is None:
+            return
+        slices_path = self.active_meta_plan_path() / "slices.json"
+        slices = json.loads(slices_path.read_text(encoding="utf-8"))
+        for item in slices:
+            if item.get("id") == slice_id:
+                item["child_work_item_id"] = self.work_item_path().name
+                item["child_work_item_path"] = f".agent/work/{self.work_item_path().name}"
+        slices_path.write_text(json.dumps(slices, indent=2, sort_keys=True), encoding="utf-8")
+
+    def reconcile_active_slice(self) -> None:
+        slice_id = self.active_meta_plan_slice_id()
+        if slice_id is None:
+            return
+        meta_path = self.active_meta_plan_path() / "meta.json"
+        slices_path = self.active_meta_plan_path() / "slices.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        slices = json.loads(slices_path.read_text(encoding="utf-8"))
+        next_slice_id: str | None = None
+        for index, item in enumerate(slices):
+            if item.get("id") != slice_id:
+                continue
+            item["status"] = "completed"
+            item["result_summary"] = f"Completed {slice_id}"
+            item["notes"] = [*item.get("notes", []), "reviewed"]
+            if index + 1 < len(slices):
+                next_slice_id = str(slices[index + 1]["id"])
+                slices[index + 1]["status"] = "active"
+            break
+        if next_slice_id is None:
+            meta["status"] = "completed"
+        else:
+            meta["status"] = "active"
+            meta["active_slice_id"] = next_slice_id
+        slices_path.write_text(json.dumps(slices, indent=2, sort_keys=True), encoding="utf-8")
+        meta_path.write_text(json.dumps(meta, indent=2, sort_keys=True), encoding="utf-8")
 
     def linked_studio_repo_path(self) -> Path:
         if self.run_cwd is None:
@@ -186,6 +290,9 @@ class FakeServer:
         if self.scenario == "refactor_missing_execplan":
             return
         stage = self.expected_stages[stage_index]
+        if stage["skill_name"] == "create-meta-plan":
+            self.write_meta_plan()
+            return
         work_item_path = self.work_item_path()
         if stage["skill_name"] == "find-refactor-candidates":
             work_item_path.mkdir(parents=True, exist_ok=True)
@@ -199,19 +306,25 @@ class FakeServer:
             self.write_meta(stage="decision", state="completed")
             self.work_item_decision_path().write_text(f"decision for stage {stage_index + 1}\n", encoding="utf-8")
             return
-        if stage["skill_name"] in {"execplan-create", "execplan-improve", "execplan-improve-subagents"}:
+        if stage["skill_name"] in {"execplan-create", "execplan-improve"}:
             work_item_path.mkdir(parents=True, exist_ok=True)
             self.write_active_link()
             self.write_meta(stage="plan", state="completed")
             self.work_item_execplan_path().write_text(f"plan for stage {stage_index + 1}\n", encoding="utf-8")
+            if self.config.get("mode") == "builder" and stage["skill_name"] == "execplan-create":
+                self.record_child_work_item_on_active_slice()
             return
         if stage["skill_name"] == "implement-execplan":
             work_item_path.mkdir(parents=True, exist_ok=True)
             self.write_active_link()
             self.write_meta(stage="implementation", state="completed")
+        if self.config.get("mode") == "builder" and stage["skill_name"] == "review-recent-work":
+            review_suffix = f"review-recent-work-{self.config['review']}"
+            if not str(stage["label"]).endswith(review_suffix):
+                return
+            self.reconcile_active_slice()
         if self.scenario == "review_mutates_linked_repo" and stage["skill_name"] in {
             "review-recent-work",
-            "review-recent-work-subagents",
         }:
             linked_repo = self.linked_studio_repo_path()
             linked_repo.mkdir(parents=True, exist_ok=True)
@@ -500,6 +613,15 @@ class FakeServer:
         if self.scenario == "happy_path":
             self.run_happy_path()
             return
+        if self.scenario == "goal_run":
+            self.run_goal_plan(goal_count=1)
+            return
+        if self.scenario == "goal_run_two":
+            self.run_goal_plan(goal_count=2)
+            return
+        if self.scenario == "goal_feature_disabled":
+            self.run_goal_feature_disabled()
+            return
         if self.scenario in {
             "refactor_with_prompt",
             "refactor_without_prompt",
@@ -509,6 +631,99 @@ class FakeServer:
             self.run_happy_path()
             return
         raise ProtocolError(f"unsupported scenario: {self.scenario}")
+
+    def handle_goal_set(self) -> None:
+        request = self.expect_request("thread/goal/set")
+        params = request.get("params", {})
+        if params.get("threadId") != self.thread_id:
+            raise ProtocolError(f"thread/goal/set used wrong thread id: {params}")
+        objective = params.get("objective")
+        if not isinstance(objective, str) or "Goal:" not in objective:
+            raise ProtocolError(f"thread/goal/set missing objective: {params}")
+        if params.get("status") != "active":
+            raise ProtocolError(f"thread/goal/set missing active status: {params}")
+        self.current_goal = {
+            "threadId": self.thread_id,
+            "objective": objective,
+            "status": "active",
+            "tokenBudget": None,
+            "tokensUsed": 0,
+            "timeUsedSeconds": 0,
+            "createdAt": 1,
+            "updatedAt": 1,
+        }
+        self.send({"id": request["id"], "result": {"goal": self.current_goal}})
+        self.send(
+            {
+                "method": "thread/goal/updated",
+                "params": {"threadId": self.thread_id, "turnId": None, "goal": self.current_goal},
+            }
+        )
+
+    def handle_goal_get(self) -> None:
+        request = self.expect_request("thread/goal/get")
+        if request.get("params", {}).get("threadId") != self.thread_id:
+            raise ProtocolError(f"thread/goal/get used wrong thread id: {request}")
+        self.send({"id": request["id"], "result": {"goal": self.current_goal}})
+
+    def handle_goal_feature_disabled(self) -> None:
+        request = self.expect_request("thread/goal/get")
+        if request.get("params", {}).get("threadId") != self.thread_id:
+            raise ProtocolError(f"thread/goal/get used wrong thread id: {request}")
+        self.send(
+            {
+                "id": request["id"],
+                "error": {
+                    "code": -32602,
+                    "message": "goals feature is disabled",
+                    "data": None,
+                },
+            }
+        )
+
+    def handle_goal_clear(self) -> None:
+        request = self.expect_request("thread/goal/clear")
+        if request.get("params", {}).get("threadId") != self.thread_id:
+            raise ProtocolError(f"thread/goal/clear used wrong thread id: {request}")
+        self.current_goal = None
+        self.send({"id": request["id"], "result": {"cleared": True}})
+        self.send({"method": "thread/goal/cleared", "params": {"threadId": self.thread_id}})
+
+    def run_goal_plan(self, *, goal_count: int) -> None:
+        self.handle_goal_get()
+        for index in range(goal_count):
+            self.handle_goal_set()
+            turn_id = f"goal-turn-{index + 1}"
+            turn_start = self.expect_request("turn/start")
+            params = turn_start.get("params", {})
+            inputs = params.get("input")
+            if params.get("threadId") != self.thread_id:
+                raise ProtocolError(f"goal turn/start used wrong thread id: {params}")
+            if not isinstance(inputs, list) or len(inputs) != 1 or inputs[0].get("type") != "text":
+                raise ProtocolError(f"goal turn/start expected one text input: {params}")
+            self.send({"id": turn_start["id"], "result": {"turn": {"id": turn_id, "status": "inProgress"}}})
+            self.send(
+                {
+                    "method": "turn/started",
+                    "params": {"threadId": self.thread_id, "turn": {"id": turn_id, "status": "inProgress"}},
+                }
+            )
+            self.send_token_usage(turn_id, index)
+            if self.current_goal is None:
+                raise ProtocolError("goal was not set before turn")
+            self.current_goal = {**self.current_goal, "status": "complete", "tokensUsed": 100, "timeUsedSeconds": 5}
+            self.send(
+                {
+                    "method": "thread/goal/updated",
+                    "params": {"threadId": self.thread_id, "turnId": turn_id, "goal": self.current_goal},
+                }
+            )
+            self.complete_turn(turn_id)
+            self.handle_goal_get()
+            self.handle_goal_clear()
+
+    def run_goal_feature_disabled(self) -> None:
+        self.handle_goal_feature_disabled()
 
     def validate_turn_start(self, message: dict[str, Any], stage_index: int, *, turn_id: str | None = None) -> tuple[int, str]:
         self.check_turn_start_inputs(message, stage_index)
@@ -784,9 +999,23 @@ class FakeServer:
         self.complete_turn(turn_id)
 
     def run_happy_path(self, *, start_stage_index: int = 0) -> None:
-        cycle_length = planning_stage_count() + int(self.config["improvements"]) + int(self.config["review"]) + 1
+        cycle_length = workflow_topology.stages_per_cycle(
+            improvement_count=int(self.config["improvements"]),
+            review_count=int(self.config["review"]),
+        )
+        builder_slice_length = workflow_topology.builder_stages_per_slice(
+            improvement_count=int(self.config["improvements"]),
+            review_count=int(self.config["review"]),
+        )
         for stage_index in range(start_stage_index, len(self.expected_stages)):
-            if stage_index > start_stage_index and stage_index % cycle_length == 0:
+            if self.config.get("mode") == "builder":
+                if self.config.get("meta_plan") is None:
+                    should_start_thread = stage_index > start_stage_index and stage_index >= 1 and (stage_index - 1) % builder_slice_length == 0
+                else:
+                    should_start_thread = stage_index > start_stage_index and stage_index % builder_slice_length == 0
+            else:
+                should_start_thread = stage_index > start_stage_index and stage_index % cycle_length == 0
+            if should_start_thread:
                 self.handle_thread_start()
             turn_start = self.expect_request("turn/start")
             _, turn_id = self.validate_turn_start(turn_start, stage_index)
@@ -833,12 +1062,15 @@ class FakeServer:
         if self.session_index == 0:
             turn_start = self.expect_request("turn/start")
             self.check_turn_start_inputs(turn_start, 0)
-            time.sleep(0.2)
+            self.write_record()
+            time.sleep(0.4)
             return
         self.run_happy_path()
 
     def run_retryable_impl_ambiguity(self) -> None:
-        implementation_stage_index = planning_stage_count() + int(self.config["improvements"])
+        implementation_stage_index = workflow_topology.implementation_stage_position(
+            improvement_count=int(self.config["improvements"])
+        ) - 1
         for stage_index in range(implementation_stage_index):
             turn_start = self.expect_request("turn/start")
             _, turn_id = self.validate_turn_start(turn_start, stage_index)
@@ -899,7 +1131,9 @@ class FakeServer:
         )
 
     def run_retryable_impl_postcondition_success(self) -> None:
-        implementation_stage_index = planning_stage_count() + int(self.config["improvements"])
+        implementation_stage_index = workflow_topology.implementation_stage_position(
+            improvement_count=int(self.config["improvements"])
+        ) - 1
         for stage_index in range(implementation_stage_index):
             turn_start = self.expect_request("turn/start")
             _, turn_id = self.validate_turn_start(turn_start, stage_index)
@@ -933,7 +1167,9 @@ class FakeServer:
         self.run_happy_path(start_stage_index=implementation_stage_index + 1)
 
     def run_retryable_impl_postcondition_missing_tokens(self) -> None:
-        implementation_stage_index = planning_stage_count() + int(self.config["improvements"])
+        implementation_stage_index = workflow_topology.implementation_stage_position(
+            improvement_count=int(self.config["improvements"])
+        ) - 1
         for stage_index in range(implementation_stage_index):
             turn_start = self.expect_request("turn/start")
             _, turn_id = self.validate_turn_start(turn_start, stage_index)

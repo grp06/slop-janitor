@@ -6,6 +6,7 @@ source_root="${HOME}/.agents/skills"
 dest_root="${repo_root}/.agents/skills"
 
 skills=(
+  create-meta-plan
   find-refactor-candidates
   select-refactor
   execplan-create
